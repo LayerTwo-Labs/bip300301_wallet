@@ -20,6 +20,10 @@ pub enum Command {
     },
     ListSidechainProposals,
     ListSidechains,
+    GetBlockCount,
+    GetCtip {
+        sidechain_number: u8,
+    },
     AckSidechain {
         sidechain_number: u8,
         data_hash: String,
@@ -40,4 +44,10 @@ pub enum Command {
         address: String,
         amount: Amount,
     },
+    GetDeposits {
+        sidechain_number: Option<u8>,
+    },
+    EncodeSidechainAddress {
+        data: String,
+    }
 }

@@ -3,19 +3,24 @@ use bdk::bitcoin::{Amount, Network, Txid};
 use bdk::blockchain::ElectrumBlockchain;
 use bdk::template::Bip84;
 use bdk::wallet::AddressIndex;
-use bdk::KeychainKind;
 use bdk::{
     database::SqliteDatabase,
     keys::{DerivableKey, ExtendedKey},
 };
-use bip300_messages::bitcoin::Script;
-use bip300_messages::CoinbaseBuilder;
+use bdk::{KeychainKind, SignOptions, SyncOptions};
+use bip300_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
+use bip300_messages::bitcoin::opcodes::OP_TRUE;
+use bip300_messages::bitcoin::{Script, Witness};
+use bip300_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use enforcer_proto::validator::validator_client::ValidatorClient;
-use enforcer_proto::validator::{GetSidechainProposalsRequest, GetSidechainsRequest};
+use enforcer_proto::validator::{
+    GetCtipRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
+};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
 use tonic::IntoRequest;
@@ -24,6 +29,7 @@ pub struct Wallet {
     enforcer_client: ValidatorClient<Channel>,
     bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
     db_connection: Connection,
+    bitcoin_blockchain: ElectrumBlockchain,
 }
 
 impl Wallet {
@@ -64,12 +70,15 @@ impl Wallet {
         )
         .into_diagnostic()?;
 
-        let client = bdk::electrum_client::Client::new("127.0.0.1:60401").into_diagnostic()?;
-        let blockchain = ElectrumBlockchain::from(client);
+        let bitcoin_wallet_client =
+            bdk::electrum_client::Client::new("127.0.0.1:60401").into_diagnostic()?;
+        let bitcoin_blockchain = ElectrumBlockchain::from(bitcoin_wallet_client);
 
         let db_connection =
             Connection::open(datadir.as_ref().join("db.sqlite")).into_diagnostic()?;
 
+        // Use migrations library for this.
+        // Use rusqlite_serde.
         {
             let number_of_tables = db_connection.query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -77,16 +86,22 @@ impl Wallet {
                 |row| {let number: usize = row.get(0)?; Ok(number)}).into_diagnostic()?;
             if number_of_tables == 0 {
                 db_connection.execute(
-                    "CREATE TABLE sidechain_proposals (number INTEGER, data BLOB, UNIQUE(number, data));",())
+                    "CREATE TABLE sidechain_proposals (number INTEGER NOT NULL, data BLOB NOT NULL, UNIQUE(number, data));",())
                     .into_diagnostic()?;
                 db_connection.execute(
-                    "CREATE TABLE sidechain_acks (number INTEGER, data_hash BLOB, UNIQUE(number, data_hash));",())
+                    "CREATE TABLE sidechain_acks (number INTEGER NOT NULl, data_hash BLOB NOT NULL, UNIQUE(number, data_hash));",())
                     .into_diagnostic()?;
                 db_connection.execute(
-                    "CREATE TABLE bundle_proposals (sidechain_number INTEGER, bundle_hash BLOB, UNIQUE(sidechain_number, bundle_hash));", ())
+                    "CREATE TABLE bundle_proposals (sidechain_number INTEGER NOT NULL, bundle_hash BLOB NOT NULL, UNIQUE(sidechain_number, bundle_hash));", ())
                     .into_diagnostic()?;
                 db_connection.execute(
-                    "CREATE TABLE bundle_acks (sidechain_number INTEGER, bundle_hash BLOB, UNIQUE(sidechain_number, bundle_hash));", ())
+                    "CREATE TABLE bundle_acks (sidechain_number INTEGER NOT NULL, bundle_hash BLOB NOT NULL, UNIQUE(sidechain_number, bundle_hash));", ())
+                    .into_diagnostic()?;
+                db_connection
+                    .execute(
+                        "CREATE TABLE deposits (sidechain_number INTEGER NOT NULL, address BLOB NOT NULl, amount INTEGER NOT NULL, txid BLOB UNIQUE NOT NULL, transaction_bytes BLOB NOT NULL);",
+                        (),
+                    )
                     .into_diagnostic()?;
             }
         }
@@ -99,17 +114,28 @@ impl Wallet {
             enforcer_client,
             bitcoin_wallet,
             db_connection,
+            bitcoin_blockchain,
         })
     }
 
-    pub async fn mine(&self, coinbase_outputs: &[TxOut]) -> Result<()> {
+    pub async fn mine(
+        &self,
+        coinbase_outputs: &[TxOut],
+        transactions: Vec<Transaction>,
+    ) -> Result<()> {
         let main_datadir = Path::new("../../data/bitcoin/");
         let client = create_client(main_datadir)?;
         let addr = self
             .bitcoin_wallet
             .get_address(AddressIndex::New)
             .into_diagnostic()?;
-        submit_block(&client, addr.script_pubkey(), coinbase_outputs).await?;
+        submit_block(
+            &client,
+            addr.script_pubkey(),
+            coinbase_outputs,
+            transactions,
+        )
+        .await?;
         std::thread::sleep(Duration::from_millis(500));
 
         /*
@@ -140,7 +166,9 @@ impl Wallet {
     }
 
     pub fn get_balance(&self) -> Result<()> {
-        // wallet.sync(&blockchain, options).into_diagnostic()?;
+        self.bitcoin_wallet
+            .sync(&self.bitcoin_blockchain, SyncOptions::default())
+            .into_diagnostic()?;
         let balance = self.bitcoin_wallet.get_balance().into_diagnostic()?;
         let immature = Amount::from_sat(balance.immature);
         let untrusted_pending = Amount::from_sat(balance.untrusted_pending);
@@ -154,7 +182,9 @@ impl Wallet {
     }
 
     pub fn get_utxos(&self) -> Result<()> {
-        // wallet.sync(&blockchain, options).into_diagnostic()?;
+        self.bitcoin_wallet
+            .sync(&self.bitcoin_blockchain, SyncOptions::default())
+            .into_diagnostic()?;
         let utxos = self.bitcoin_wallet.list_unspent().into_diagnostic()?;
         for utxo in &utxos {
             println!(
@@ -227,6 +257,16 @@ impl Wallet {
         Ok(acks)
     }
 
+    pub fn delete_sidechain_ack(&self, ack: &SidechainAck) -> Result<()> {
+        self.db_connection
+            .execute(
+                "DELETE FROM sidechain_acks WHERE number = ?1 AND data_hash = ?2",
+                (ack.sidechain_number, ack.data_hash),
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
     pub async fn get_pending_sidechain_proposals(
         &mut self,
     ) -> Result<HashMap<u8, enforcer_proto::validator::SidechainProposal>> {
@@ -288,12 +328,159 @@ impl Wallet {
         Ok(sidechains)
     }
 
+    pub async fn get_ctip(&mut self, sidechain_number: u8) -> Result<(OutPoint, u64)> {
+        let request = GetCtipRequest {
+            sidechain_number: sidechain_number as u32,
+        };
+        let ctip = self
+            .enforcer_client
+            .get_ctip(request)
+            .await
+            .into_diagnostic()?
+            .into_inner();
+        let txid = bitcoin::Txid::from_slice(&ctip.txid).into_diagnostic()?;
+        let vout = ctip.vout;
+        let outpoint = OutPoint { txid, vout };
+        let value = ctip.value;
+        Ok((outpoint, value))
+    }
+
     pub fn delete_sidechain_proposals(&self) -> Result<()> {
         self.db_connection
             .execute("DELETE FROM sidechain_proposals;", ())
             .into_diagnostic()?;
         Ok(())
     }
+
+    pub async fn deposit(
+        &mut self,
+        sidechain_number: u8,
+        address: &str,
+        amount: u64,
+    ) -> Result<()> {
+        let (ctip_outpoint, ctip_amount) = self.get_ctip(sidechain_number).await?;
+        let message = [
+            OP_DRIVECHAIN.to_u8(),
+            OP_PUSHBYTES_1.to_u8(),
+            sidechain_number,
+            OP_TRUE.to_u8(),
+        ];
+        let op_drivechain = ScriptBuf::from_bytes(message.into());
+        dbg!(&op_drivechain);
+
+        let address = bs58::decode(address)
+            .with_check(None)
+            .into_vec()
+            .into_diagnostic()?;
+        let message = [vec![OP_RETURN.to_u8()], address.clone()].concat();
+        let address_op_return = ScriptBuf::from_bytes(message);
+
+        let transaction = self
+            .bitcoin_wallet
+            .get_tx(&ctip_outpoint.txid, true)
+            .into_diagnostic()?
+            .unwrap();
+
+        let mut builder = self.bitcoin_wallet.build_tx();
+        builder
+            .ordering(bdk::wallet::tx_builder::TxOrdering::Untouched)
+            .add_recipient(op_drivechain.clone(), ctip_amount + amount)
+            .add_recipient(address_op_return, 0)
+            .add_foreign_utxo(
+                ctip_outpoint,
+                bitcoin::psbt::Input {
+                    non_witness_utxo: Some(transaction.transaction.unwrap()),
+                    ..bitcoin::psbt::Input::default()
+                },
+                0,
+            )
+            .into_diagnostic()?;
+
+        let (mut psbt, details) = builder.finish().into_diagnostic()?;
+        self.bitcoin_wallet
+            .sign(&mut psbt, SignOptions::default())
+            .into_diagnostic()?;
+        let mut transaction = psbt.extract_tx();
+        /*
+        transaction.input.push(TxIn {
+            previous_output: ctip_outpoint,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        });
+        */
+
+        let mut transaction_bytes = vec![];
+        let mut cursor = Cursor::new(&mut transaction_bytes);
+        transaction
+            .consensus_encode(&mut cursor)
+            .into_diagnostic()?;
+        self.db_connection
+            .execute(
+                "INSERT INTO deposits (sidechain_number, address, amount, txid, transaction_bytes) VALUES (?1, ?2, ?3, ?4, ?5)",
+                (sidechain_number, address, amount, transaction.txid().as_byte_array(), &transaction_bytes),
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn delete_deposits(&self) -> Result<()> {
+        self.db_connection
+            .execute("DELETE FROM deposits;", ())
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn get_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
+        let mut statement = match sidechain_number {
+            Some(sidechain_number) => {
+                let mut statement = self
+            .db_connection
+            .prepare("SELECT sidechain_number, address, amount, transaction_bytes FROM deposits WHERE sidechain_number = ?1;").into_diagnostic()?;
+                statement.execute([sidechain_number]);
+                statement
+            }
+            None => self
+                .db_connection
+                .prepare(
+                    "SELECT sidechain_number, address, amount, transaction_bytes FROM deposits;",
+                )
+                .into_diagnostic()?,
+        };
+        let rows = statement
+            .query_map([], |row| {
+                let sidechain_number: u8 = row.get(0)?;
+                let address: Vec<u8> = row.get(1)?;
+                let amount: u64 = row.get(2)?;
+                let transaction_bytes: Vec<u8> = row.get(3)?;
+                let transaction = Transaction::consensus_decode_from_finite_reader(
+                    &mut transaction_bytes.as_slice(),
+                )
+                .unwrap();
+                let deposit = Deposit {
+                    sidechain_number,
+                    address,
+                    amount,
+                    transaction,
+                };
+                Ok(deposit)
+            })
+            .into_diagnostic()?;
+        let mut deposits = vec![];
+        for deposit in rows {
+            let deposit = deposit.into_diagnostic()?;
+            deposits.push(deposit);
+        }
+        Ok(deposits)
+    }
+}
+
+#[derive(Debug)]
+pub struct Deposit {
+    pub sidechain_number: u8,
+    pub address: Vec<u8>,
+    pub amount: u64,
+    pub transaction: Transaction,
 }
 
 #[derive(Debug)]
@@ -305,7 +492,7 @@ pub struct Sidechain {
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ureq_jsonrpc::{json, Client};
 
-fn create_client(main_datadir: &Path) -> Result<Client> {
+pub fn create_client(main_datadir: &Path) -> Result<Client> {
     let auth = std::fs::read_to_string(main_datadir.join("regtest/.cookie")).into_diagnostic()?;
     let mut auth = auth.split(":");
     let user = auth
@@ -336,7 +523,7 @@ use bitcoin::opcodes::OP_0;
 use bitcoin::{consensus::Decodable, Block};
 use bitcoin::{
     merkle_tree, Address, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Target,
-    Transaction, TxIn, TxOut, Witness,
+    Transaction, TxIn, TxOut,
 };
 use std::str::FromStr;
 
@@ -344,6 +531,7 @@ async fn submit_block(
     main_client: &Client,
     script_pubkey: ScriptBuf,
     coinbase_outputs: &[TxOut],
+    transactions: Vec<Transaction>,
 ) -> Result<()> {
     let block_height: u32 = main_client
         .send_request("getblockcount", &[])
@@ -380,44 +568,66 @@ async fn submit_block(
         }]
     };
 
-    let txdata = vec![Transaction {
-        version: 2,
-        lock_time: LockTime::Blocks(Height::ZERO),
-        input: vec![TxIn {
-            previous_output: OutPoint {
-                txid: Txid::all_zeros(),
-                vout: 0xFFFF_FFFF,
-            },
-            sequence: Sequence::MAX,
-            witness: Witness::new(),
-            script_sig,
-        }],
-        output: [&output, coinbase_outputs].concat(),
-    }];
+    const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
 
-    let mut tx_hashes: Vec<_> = txdata.iter().map(Transaction::txid).collect();
-    let merkle_root: TxMerkleNode = merkle_tree::calculate_root_inline(&mut tx_hashes)
-        .unwrap()
-        .to_raw_hash()
-        .into();
+    let txdata = [
+        vec![Transaction {
+            version: 2,
+            lock_time: LockTime::Blocks(Height::ZERO),
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::all_zeros(),
+                    vout: 0xFFFF_FFFF,
+                },
+                sequence: Sequence::MAX,
+                witness: Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
+                script_sig,
+            }],
+            output: [&output, coinbase_outputs].concat(),
+        }],
+        transactions,
+    ]
+    .concat();
 
     let genesis_block = genesis_block(bitcoin::Network::Regtest);
     let bits = genesis_block.header.bits;
-    let mut header = bitcoin::block::Header {
+    let header = bitcoin::block::Header {
         version: Version::NO_SOFT_FORK_SIGNALLING,
         prev_blockhash,
-        merkle_root,
+        // merkle root is computed after the witness commitment is added to coinbase
+        merkle_root: TxMerkleNode::all_zeros(),
         time,
         bits,
         nonce: 0,
     };
+    let mut block = Block { header, txdata };
+    let witness_root = block.witness_root().unwrap();
+    let witness_commitment =
+        Block::compute_witness_commitment(&witness_root, &WITNESS_RESERVED_VALUE);
+
+    let script_pubkey_bytes = [
+        vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()],
+        vec![0xaa, 0x21, 0xa9, 0xed],
+        witness_commitment.as_byte_array().into(),
+    ]
+    .concat();
+    let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
+    dbg!(&script_pubkey);
+    block.txdata[0].output.push(TxOut {
+        script_pubkey,
+        value: 0,
+    });
+    let mut tx_hashes: Vec<_> = block.txdata.iter().map(Transaction::txid).collect();
+    block.header.merkle_root = merkle_tree::calculate_root_inline(&mut tx_hashes)
+        .unwrap()
+        .to_raw_hash()
+        .into();
     loop {
-        header.nonce += 1;
-        if header.validate_pow(header.target()).is_ok() {
+        block.header.nonce += 1;
+        if block.header.validate_pow(header.target()).is_ok() {
             break;
         }
     }
-    let block = Block { header, txdata };
     dbg!(&block);
     let mut block_bytes = vec![];
     block.consensus_encode(&mut block_bytes).into_diagnostic()?;

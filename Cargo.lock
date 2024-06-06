@@ -277,6 +277,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
+name = "bip300301_wallet"
+version = "0.1.0"
+dependencies = [
+ "bdk",
+ "bip300_messages",
+ "bip39",
+ "bs58",
+ "clap",
+ "ed25519-dalek",
+ "ed25519-dalek-bip32",
+ "enforcer_proto",
+ "hex",
+ "miette 7.2.0",
+ "prost",
+ "rusqlite",
+ "tokio",
+ "tonic",
+ "ureq-jsonrpc",
+]
+
+[[package]]
 name = "bip300_messages"
 version = "0.1.0"
 dependencies = [
@@ -354,6 +375,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "sha2",
+ "tinyvec",
 ]
 
 [[package]]
@@ -2107,26 +2138,6 @@ name = "version_check"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
-
-[[package]]
-name = "wallet"
-version = "0.1.0"
-dependencies = [
- "bdk",
- "bip300_messages",
- "bip39",
- "clap",
- "ed25519-dalek",
- "ed25519-dalek-bip32",
- "enforcer_proto",
- "hex",
- "miette 7.2.0",
- "prost",
- "rusqlite",
- "tokio",
- "tonic",
- "ureq-jsonrpc",
-]
 
 [[package]]
 name = "want"

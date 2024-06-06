@@ -1,5 +1,5 @@
 [package]
-name = "wallet"
+name = "bip300301_wallet"
 version = "0.1.0"
 edition = "2021"
 
@@ -23,3 +23,4 @@ rusqlite = "0.28.0"
 tonic = "0.11.0"
 prost = "0.12.4"
 enforcer_proto = { path = "../enforcer_proto" }
+bs58 = { version = "0.5.1", features = ["check"] }
