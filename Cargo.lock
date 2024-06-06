@@ -277,17 +277,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d86b93f97252c47b41663388e6d155714a9d0c398b99f1005cbc5f978b29f445"
 
 [[package]]
+name = "bip300301_enforcer_proto"
+version = "0.1.0"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_enforcer_proto#caae8f963278fd7ce7e803269fa0e1dc9004eae1"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "bip300301_messages"
+version = "0.1.0"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#c2d6c363edd89413d8896d8128fbad726dd51507"
+dependencies = [
+ "bitcoin",
+ "byteorder",
+ "miette 5.10.0",
+ "nom",
+ "sha2",
+]
+
+[[package]]
 name = "bip300301_wallet"
 version = "0.1.0"
 dependencies = [
  "bdk",
- "bip300_messages",
+ "bip300301_enforcer_proto",
+ "bip300301_messages",
  "bip39",
  "bs58",
  "clap",
  "ed25519-dalek",
  "ed25519-dalek-bip32",
- "enforcer_proto",
  "hex",
  "miette 7.2.0",
  "prost",
@@ -295,17 +317,6 @@ dependencies = [
  "tokio",
  "tonic",
  "ureq-jsonrpc",
-]
-
-[[package]]
-name = "bip300_messages"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "byteorder",
- "miette 5.10.0",
- "nom",
- "sha2",
 ]
 
 [[package]]
@@ -627,15 +638,6 @@ dependencies = [
  "webpki",
  "webpki-roots 0.22.6",
  "winapi",
-]
-
-[[package]]
-name = "enforcer_proto"
-version = "0.1.0"
-dependencies = [
- "prost",
- "tonic",
- "tonic-build",
 ]
 
 [[package]]

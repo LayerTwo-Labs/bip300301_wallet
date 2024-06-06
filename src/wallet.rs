@@ -8,15 +8,15 @@ use bdk::{
     keys::{DerivableKey, ExtendedKey},
 };
 use bdk::{KeychainKind, SignOptions, SyncOptions};
-use bip300_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
-use bip300_messages::bitcoin::opcodes::OP_TRUE;
-use bip300_messages::bitcoin::{Script, Witness};
-use bip300_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
-use bip39::{Language, Mnemonic};
-use enforcer_proto::validator::validator_client::ValidatorClient;
-use enforcer_proto::validator::{
+use bip300301_enforcer_proto::validator::validator_client::ValidatorClient;
+use bip300301_enforcer_proto::validator::{
     GetCtipRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
 };
+use bip300301_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
+use bip300301_messages::bitcoin::opcodes::OP_TRUE;
+use bip300301_messages::bitcoin::{Script, Witness};
+use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
+use bip39::{Language, Mnemonic};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -208,7 +208,7 @@ impl Wallet {
 
         dbg!(coinbase);
 
-        let data_hash = bip300_messages::sha256d(data);
+        let data_hash = bip300301_messages::sha256d(data);
         let data_hash = hex::encode(data_hash);
 
         dbg!(data_hash);
@@ -269,7 +269,7 @@ impl Wallet {
 
     pub async fn get_pending_sidechain_proposals(
         &mut self,
-    ) -> Result<HashMap<u8, enforcer_proto::validator::SidechainProposal>> {
+    ) -> Result<HashMap<u8, bip300301_enforcer_proto::validator::SidechainProposal>> {
         let pending_proposals = self
             .enforcer_client
             .get_sidechain_proposals(GetSidechainProposalsRequest {})

@@ -17,10 +17,11 @@ hex = "0.4.3"
 ureq-jsonrpc = { git = "https://github.com/nchashch/ureq-jsonrpc" }
 tokio = { version = "1.37.0", features = ["rt-multi-thread", "macros"] }
 
-bip300_messages = { path = "../bip300_messages" }
 rusqlite = "0.28.0"
 
 tonic = "0.11.0"
 prost = "0.12.4"
-enforcer_proto = { path = "../enforcer_proto" }
 bs58 = { version = "0.5.1", features = ["check"] }
+
+bip300301_enforcer_proto = { git = "https://github.com/LayerTwo-Labs/bip300301_enforcer_proto" }
+bip300301_messages = { git = "https://github.com/LayerTwo-Labs/bip300301_messages" }

@@ -1,6 +1,6 @@
 use std::{future::pending, path::Path};
 
-use bip300_messages::{
+use bip300301_messages::{
     bitcoin::{
         opcodes::{all::OP_PUSHBYTES_1, OP_TRUE},
         ScriptBuf,
