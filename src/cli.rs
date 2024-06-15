@@ -9,45 +9,52 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    Mine {
-        count: Option<u32>,
-    },
+    /// Mine a new block in regtest mode.
+    Mine { count: Option<u32> },
+
+
+    /// Show all transactions in the "mempool".
+    Mempool,
+
+    /// Get balances available in the wallet.
     GetBalance,
+    /// Get a list of all UTXOs in the wallet.
     GetUtxos,
-    ProposeSidechain {
-        sidechain_number: u8,
-        data: String,
-    },
-    ListSidechainProposals,
-    ListSidechains,
+    /// Crete a new sidechain proposal for miners to vote on.
+    ProposeSidechain { sidechain_number: u8, data: String },
+    /// Get all sidechain proposals.
+    GetSidechainProposals,
+    /// Get all active sidechains.
+    GetSidechains,
+    /// Get number of blocks.
     GetBlockCount,
-    GetCtip {
-        sidechain_number: u8,
-    },
+    /// Get current CTIP for a particular sidechain.
+    GetCtip { sidechain_number: u8 },
+    /// Vote for activating a sidechain.
     AckSidechain {
         sidechain_number: u8,
         data_hash: String,
     },
+    /// Don't vote for activating a sidechain.
     NackSidechain {
         sidechain_number: u8,
         data_hash: String,
     },
+    /// Propose a withdrawal bundle.
     ProposeBundle {
         sidechain_number: u8,
         bundle_hash: String,
     },
-    AckBundles {
-        bundles: Vec<String>,
-    },
+    /// Vote for including withdrawal bundles.
+    AckBundles { bundles: Vec<String> },
+    /// Deposit funds to a sidechain address.
     Deposit {
         sidechain_number: u8,
         address: String,
         amount: Amount,
     },
-    GetDeposits {
-        sidechain_number: Option<u8>,
-    },
-    EncodeSidechainAddress {
-        data: String,
-    }
+    /// Get all deposits.
+    GetDeposits { sidechain_number: Option<u8> },
+    /// Encode sidechain address in the proper format.
+    EncodeSidechainAddress { data: String },
 }

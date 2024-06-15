@@ -1,5 +1,6 @@
 use std::{future::pending, path::Path};
 
+use bdk::wallet::wallet_name_from_descriptor;
 use bip300301_messages::{
     bitcoin::{
         opcodes::{all::OP_PUSHBYTES_1, OP_TRUE},
@@ -85,6 +86,9 @@ async fn main() -> Result<()> {
                 wallet.delete_deposits()?;
             }
         }
+        Command::Mempool => {
+            todo!();
+        }
         Command::GetBalance => {
             wallet.get_balance()?;
         }
@@ -97,7 +101,7 @@ async fn main() -> Result<()> {
         } => {
             wallet.propose_sidechain(sidechain_number, data.as_bytes())?;
         }
-        Command::ListSidechainProposals => {
+        Command::GetSidechainProposals => {
             let sidechain_proposals = wallet.get_sidechain_proposals()?;
             let pending_sidechain_proposals = wallet.get_pending_sidechain_proposals().await?;
 
@@ -118,13 +122,7 @@ async fn main() -> Result<()> {
             for (_, proposal) in &pending_sidechain_proposals {
                 let data = String::from_utf8(proposal.data.clone()).into_diagnostic()?;
                 let data_hash = hex::encode(&proposal.data_hash);
-
-                let main_datadir = Path::new("../../data/bitcoin/");
-                let main_client = create_client(main_datadir)?;
-                let block_height: u32 = main_client
-                    .send_request("getblockcount", &[])
-                    .into_diagnostic()?
-                    .ok_or(miette!("failed to get block count"))?;
+                let block_height = wallet.get_block_height()?;
                 println!(
                     "sidechain number: {} data hash: {} data: {} votes: {} age: {}",
                     proposal.sidechain_number,
@@ -135,7 +133,7 @@ async fn main() -> Result<()> {
                 );
             }
         }
-        Command::ListSidechains => {
+        Command::GetSidechains => {
             let sidechains = wallet.get_sidechains().await?;
             for sidechain in &sidechains {
                 println!(
@@ -146,12 +144,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::GetBlockCount => {
-            let main_datadir = Path::new("../../data/bitcoin/");
-            let main_client = create_client(main_datadir)?;
-            let block_height: u32 = main_client
-                .send_request("getblockcount", &[])
-                .into_diagnostic()?
-                .ok_or(miette!("failed to get block count"))?;
+            let block_height = wallet.get_block_height()?;
             println!("{block_height}");
         }
         Command::GetCtip { sidechain_number } => {

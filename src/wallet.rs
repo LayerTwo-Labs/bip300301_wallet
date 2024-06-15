@@ -26,6 +26,7 @@ use tonic::transport::Channel;
 use tonic::IntoRequest;
 
 pub struct Wallet {
+    main_client: Client,
     enforcer_client: ValidatorClient<Channel>,
     bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
     db_connection: Connection,
@@ -110,7 +111,10 @@ impl Wallet {
             .await
             .into_diagnostic()?;
 
+        let main_datadir = Path::new("../../data/bitcoin/");
+        let main_client = create_client(main_datadir)?;
         Ok(Self {
+            main_client,
             enforcer_client,
             bitcoin_wallet,
             db_connection,
@@ -118,50 +122,137 @@ impl Wallet {
         })
     }
 
+    pub fn get_block_height(&self) -> Result<u32> {
+        let block_height: u32 = self
+            .main_client
+            .send_request("getblockcount", &[])
+            .into_diagnostic()?
+            .ok_or(miette!("failed to get block count"))?;
+        Ok(block_height)
+    }
+
+    pub async fn generate_block(
+        &self,
+        coinbase_outputs: &[TxOut],
+        transactions: Vec<Transaction>,
+    ) -> Result<Block> {
+        let addr = self
+            .bitcoin_wallet
+            .get_address(AddressIndex::New)
+            .into_diagnostic()?;
+        let script_pubkey = addr.script_pubkey();
+        let block_height = self.get_block_height()?;
+        println!("Block height: {block_height}");
+        let block_hash: String = self
+            .main_client
+            .send_request("getblockhash", &[json!(block_height)])
+            .into_diagnostic()?
+            .ok_or(miette!("failed to get block hash"))?;
+        let prev_blockhash = BlockHash::from_str(&block_hash).into_diagnostic()?;
+
+        let start = SystemTime::now();
+        let time = start
+            .duration_since(UNIX_EPOCH)
+            .into_diagnostic()?
+            .as_secs() as u32;
+
+        let script_sig = bitcoin::blockdata::script::Builder::new()
+            .push_int((block_height + 1) as i64)
+            .push_opcode(OP_0)
+            .into_script();
+        let value = get_block_value(block_height + 1, 0, Network::Regtest);
+
+        let output = if value > 0 {
+            vec![TxOut {
+                script_pubkey,
+                value,
+            }]
+        } else {
+            vec![TxOut {
+                script_pubkey: ScriptBuf::builder().push_opcode(OP_RETURN).into_script(),
+                value: 0,
+            }]
+        };
+
+        const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
+
+        let txdata = [
+            vec![Transaction {
+                version: 2,
+                lock_time: LockTime::Blocks(Height::ZERO),
+                input: vec![TxIn {
+                    previous_output: OutPoint {
+                        txid: Txid::all_zeros(),
+                        vout: 0xFFFF_FFFF,
+                    },
+                    sequence: Sequence::MAX,
+                    witness: Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
+                    script_sig,
+                }],
+                output: [&output, coinbase_outputs].concat(),
+            }],
+            transactions,
+        ]
+        .concat();
+
+        let genesis_block = genesis_block(bitcoin::Network::Regtest);
+        let bits = genesis_block.header.bits;
+        let header = bitcoin::block::Header {
+            version: Version::NO_SOFT_FORK_SIGNALLING,
+            prev_blockhash,
+            // merkle root is computed after the witness commitment is added to coinbase
+            merkle_root: TxMerkleNode::all_zeros(),
+            time,
+            bits,
+            nonce: 0,
+        };
+        let mut block = Block { header, txdata };
+        let witness_root = block.witness_root().unwrap();
+        let witness_commitment =
+            Block::compute_witness_commitment(&witness_root, &WITNESS_RESERVED_VALUE);
+
+        let script_pubkey_bytes = [
+            vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()],
+            vec![0xaa, 0x21, 0xa9, 0xed],
+            witness_commitment.as_byte_array().into(),
+        ]
+        .concat();
+        let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
+        dbg!(&script_pubkey);
+        block.txdata[0].output.push(TxOut {
+            script_pubkey,
+            value: 0,
+        });
+        let mut tx_hashes: Vec<_> = block.txdata.iter().map(Transaction::txid).collect();
+        block.header.merkle_root = merkle_tree::calculate_root_inline(&mut tx_hashes)
+            .unwrap()
+            .to_raw_hash()
+            .into();
+        Ok(block)
+    }
+
     pub async fn mine(
         &self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> Result<()> {
-        let main_datadir = Path::new("../../data/bitcoin/");
-        let client = create_client(main_datadir)?;
-        let addr = self
-            .bitcoin_wallet
-            .get_address(AddressIndex::New)
+        let mut block = self.generate_block(coinbase_outputs, transactions).await?;
+        loop {
+            block.header.nonce += 1;
+            if block.header.validate_pow(block.header.target()).is_ok() {
+                break;
+            }
+        }
+        dbg!(&block);
+        let mut block_bytes = vec![];
+        block.consensus_encode(&mut block_bytes).into_diagnostic()?;
+        let block_hex = hex::encode(block_bytes);
+
+        let _: Option<()> = self
+            .main_client
+            .send_request("submitblock", &[json!(block_hex)])
             .into_diagnostic()?;
-        submit_block(
-            &client,
-            addr.script_pubkey(),
-            coinbase_outputs,
-            transactions,
-        )
-        .await?;
         std::thread::sleep(Duration::from_millis(500));
-
-        /*
-        let addr1 = wallet.get_address(AddressIndex::New).into_diagnostic()?;
-        let addr2 = wallet.get_address(AddressIndex::New).into_diagnostic()?;
-        let (mut psbt1, details) = {
-            let mut builder = wallet.build_tx();
-            builder
-                .ordering(TxOrdering::Untouched)
-                .add_recipient(addr1.script_pubkey(), 50_000)
-                .add_recipient(addr2.script_pubkey(), 50_000);
-            builder.finish().into_diagnostic()?
-        };
-        // dbg!(psbt1);
-        // dbg!(details);
-        // dbg!(psbt1.clone().extract_tx());
-
-        let finalized = wallet
-            .sign(&mut psbt1, SignOptions::default())
-            .into_diagnostic()?;
-
-        assert!(finalized, "we should have signed all the inputs");
-        */
-
-        // dbg!(psbt1.extract_tx());
-
         Ok(())
     }
 
@@ -513,6 +604,7 @@ pub fn create_client(main_datadir: &Path) -> Result<Client> {
 }
 
 use bdk::bitcoin;
+use bdk::bitcoin::constants::SUBSIDY_HALVING_INTERVAL;
 use bitcoin::absolute::{Height, LockTime};
 use bitcoin::block::Version;
 use bitcoin::consensus::Encodable;
@@ -521,125 +613,8 @@ use bitcoin::hash_types::TxMerkleNode;
 use bitcoin::hashes::Hash;
 use bitcoin::opcodes::OP_0;
 use bitcoin::{consensus::Decodable, Block};
-use bitcoin::{
-    merkle_tree, Address, BlockHash, CompactTarget, OutPoint, ScriptBuf, Sequence, Target,
-    Transaction, TxIn, TxOut,
-};
+use bitcoin::{merkle_tree, BlockHash, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut};
 use std::str::FromStr;
-
-async fn submit_block(
-    main_client: &Client,
-    script_pubkey: ScriptBuf,
-    coinbase_outputs: &[TxOut],
-    transactions: Vec<Transaction>,
-) -> Result<()> {
-    let block_height: u32 = main_client
-        .send_request("getblockcount", &[])
-        .into_diagnostic()?
-        .ok_or(miette!("failed to get block count"))?;
-    println!("Block height: {block_height}");
-    let block_hash: String = main_client
-        .send_request("getblockhash", &[json!(block_height)])
-        .into_diagnostic()?
-        .ok_or(miette!("failed to get block hash"))?;
-    let prev_blockhash = BlockHash::from_str(&block_hash).into_diagnostic()?;
-
-    let start = SystemTime::now();
-    let time = start
-        .duration_since(UNIX_EPOCH)
-        .into_diagnostic()?
-        .as_secs() as u32;
-
-    let script_sig = bitcoin::blockdata::script::Builder::new()
-        .push_int((block_height + 1) as i64)
-        .push_opcode(OP_0)
-        .into_script();
-    let value = get_block_value(block_height + 1, 0, Network::Regtest);
-
-    let output = if value > 0 {
-        vec![TxOut {
-            script_pubkey,
-            value,
-        }]
-    } else {
-        vec![TxOut {
-            script_pubkey: ScriptBuf::builder().push_opcode(OP_RETURN).into_script(),
-            value: 0,
-        }]
-    };
-
-    const WITNESS_RESERVED_VALUE: [u8; 32] = [0; 32];
-
-    let txdata = [
-        vec![Transaction {
-            version: 2,
-            lock_time: LockTime::Blocks(Height::ZERO),
-            input: vec![TxIn {
-                previous_output: OutPoint {
-                    txid: Txid::all_zeros(),
-                    vout: 0xFFFF_FFFF,
-                },
-                sequence: Sequence::MAX,
-                witness: Witness::from_slice(&[WITNESS_RESERVED_VALUE]),
-                script_sig,
-            }],
-            output: [&output, coinbase_outputs].concat(),
-        }],
-        transactions,
-    ]
-    .concat();
-
-    let genesis_block = genesis_block(bitcoin::Network::Regtest);
-    let bits = genesis_block.header.bits;
-    let header = bitcoin::block::Header {
-        version: Version::NO_SOFT_FORK_SIGNALLING,
-        prev_blockhash,
-        // merkle root is computed after the witness commitment is added to coinbase
-        merkle_root: TxMerkleNode::all_zeros(),
-        time,
-        bits,
-        nonce: 0,
-    };
-    let mut block = Block { header, txdata };
-    let witness_root = block.witness_root().unwrap();
-    let witness_commitment =
-        Block::compute_witness_commitment(&witness_root, &WITNESS_RESERVED_VALUE);
-
-    let script_pubkey_bytes = [
-        vec![OP_RETURN.to_u8(), OP_PUSHBYTES_36.to_u8()],
-        vec![0xaa, 0x21, 0xa9, 0xed],
-        witness_commitment.as_byte_array().into(),
-    ]
-    .concat();
-    let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
-    dbg!(&script_pubkey);
-    block.txdata[0].output.push(TxOut {
-        script_pubkey,
-        value: 0,
-    });
-    let mut tx_hashes: Vec<_> = block.txdata.iter().map(Transaction::txid).collect();
-    block.header.merkle_root = merkle_tree::calculate_root_inline(&mut tx_hashes)
-        .unwrap()
-        .to_raw_hash()
-        .into();
-    loop {
-        block.header.nonce += 1;
-        if block.header.validate_pow(header.target()).is_ok() {
-            break;
-        }
-    }
-    dbg!(&block);
-    let mut block_bytes = vec![];
-    block.consensus_encode(&mut block_bytes).into_diagnostic()?;
-    let block_hex = hex::encode(block_bytes);
-
-    let _: Option<()> = main_client
-        .send_request("submitblock", &[json!(block_hex)])
-        .into_diagnostic()?;
-    Ok(())
-}
-
-use bdk::bitcoin::constants::SUBSIDY_HALVING_INTERVAL;
 
 fn get_block_value(height: u32, fees: u64, network: Network) -> u64 {
     let mut subsidy = 50 * Amount::ONE_BTC.to_sat();
