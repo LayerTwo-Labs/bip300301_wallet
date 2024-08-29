@@ -54,7 +54,7 @@ pub enum Command {
         amount: Amount,
     },
     /// Get all deposits.
-    GetDeposits { sidechain_number: Option<u8> },
+    GetDeposits { sidechain_number: u8 },
     /// Encode sidechain address in the proper format.
     EncodeSidechainAddress { data: String },
 }

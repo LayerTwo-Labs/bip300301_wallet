@@ -1,3 +1,5 @@
+// May the Barbarous Words inscribed upon this Black Mirror echo in All Eternity.
+
 use std::{future::pending, path::Path};
 
 use bdk::wallet::wallet_name_from_descriptor;
@@ -26,14 +28,6 @@ async fn main() -> Result<()> {
         0,
         OP_TRUE.to_u8(),
     ];
-    let op_drivechain = ScriptBuf::from_bytes(message.into());
-
-    let witness_version = op_drivechain.witness_version();
-    dbg!(witness_version);
-    dbg!(op_drivechain.is_witness_program());
-
-    let tx_hex = "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff0402670100ffffffff04807c814a00000000160014b7f21a1f88a270063cdd28f4fc19bbb57d012542000000000000000004b40103510000000000000000266ad6e1c5df032a57d5dbaefb9d7e46c6a4e0515d08d16a4ff7eeb30dde9ede22c5dd99ddd4f00000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000";
-
     let cli = cli::Cli::parse();
 
     let mut wallet = Wallet::new("./db").await?;
@@ -51,16 +45,13 @@ async fn main() -> Result<()> {
                 }
                 let sidechain_acks = wallet.get_sidechain_acks()?;
                 let pending_sidechain_proposals = wallet.get_pending_sidechain_proposals().await?;
+                dbg!(&sidechain_acks);
                 for sidechain_ack in sidechain_acks {
                     if let Some(sidechain_proposal) =
                         pending_sidechain_proposals.get(&sidechain_ack.sidechain_number)
                     {
                         if sidechain_proposal.data_hash == sidechain_ack.data_hash {
                             dbg!(sidechain_proposal);
-                            if sidechain_proposal.vote_count == 19 {
-                                coinbase_builder =
-                                    coinbase_builder.op_drivechain(sidechain_ack.sidechain_number);
-                            }
                             coinbase_builder = coinbase_builder.ack_sidechain(
                                 sidechain_ack.sidechain_number,
                                 &sidechain_ack.data_hash,
@@ -74,7 +65,7 @@ async fn main() -> Result<()> {
                 }
                 let coinbase_outputs = coinbase_builder.build();
 
-                let deposits = wallet.get_deposits(None)?;
+                let deposits = wallet.get_pending_deposits(None)?;
                 let deposit_transactions = deposits
                     .into_iter()
                     .map(|deposit| deposit.transaction)
@@ -148,8 +139,11 @@ async fn main() -> Result<()> {
             println!("{block_height}");
         }
         Command::GetCtip { sidechain_number } => {
-            let (outpoint, value) = wallet.get_ctip(sidechain_number).await?;
-            println!("outpoint: {} value: {}", outpoint, value,);
+            if let Some((outpoint, value)) = wallet.get_ctip(sidechain_number).await? {
+                println!("outpoint: {} value: {}", outpoint, value,);
+            } else {
+                println!("no ctip");
+            }
         }
         Command::NackSidechain {
             sidechain_number,
@@ -206,7 +200,8 @@ async fn main() -> Result<()> {
                 .await?;
         }
         Command::GetDeposits { sidechain_number } => {
-            let deposits = wallet.get_deposits(sidechain_number)?;
+            println!("Pending deposits:");
+            let deposits = wallet.get_pending_deposits(Some(sidechain_number))?;
             for deposit in &deposits {
                 let address = bs58::encode(&deposit.address).with_check().into_string();
                 println!(
@@ -223,6 +218,8 @@ async fn main() -> Result<()> {
                         .collect::<String>()
                 );
             }
+            println!("Deposits:");
+            wallet.get_deposits(sidechain_number).await?;
         }
         Command::EncodeSidechainAddress { data } => {
             let address = bs58::encode(data).with_check().into_string();

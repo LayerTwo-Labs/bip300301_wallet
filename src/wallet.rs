@@ -10,7 +10,7 @@ use bdk::{
 use bdk::{KeychainKind, SignOptions, SyncOptions};
 use bip300301_enforcer_proto::validator::validator_client::ValidatorClient;
 use bip300301_enforcer_proto::validator::{
-    GetCtipRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
+    GetCtipRequest, GetDepositsRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
 };
 use bip300301_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
 use bip300301_messages::bitcoin::opcodes::OP_TRUE;
@@ -18,7 +18,7 @@ use bip300301_messages::bitcoin::{Script, Witness};
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use miette::{miette, IntoDiagnostic, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -75,37 +75,52 @@ impl Wallet {
             bdk::electrum_client::Client::new("127.0.0.1:60401").into_diagnostic()?;
         let bitcoin_blockchain = ElectrumBlockchain::from(bitcoin_wallet_client);
 
-        let db_connection =
+        use rusqlite_migration::{Migrations, M};
+
+        // 1️⃣ Define migrations
+        let migrations = Migrations::new(vec![
+            M::up(
+                "CREATE TABLE sidechain_proposals
+                   (number INTEGER NOT NULL,
+                    data BLOB NOT NULL,
+                    UNIQUE(number, data));",
+            ),
+            M::up(
+                "CREATE TABLE sidechain_acks\
+                   (number INTEGER NOT NULl,
+                    data_hash BLOB NOT NULL,
+                    UNIQUE(number, data_hash));",
+            ),
+            M::up(
+                "CREATE TABLE bundle_proposals
+                   (sidechain_number INTEGER NOT NULL,
+                    bundle_hash BLOB NOT NULL,
+                    UNIQUE(sidechain_number, bundle_hash));",
+            ),
+            M::up(
+                "CREATE TABLE bundle_acks
+                   (sidechain_number INTEGER NOT NULL,
+                    bundle_hash BLOB NOT NULL,
+                    UNIQUE(sidechain_number, bundle_hash));",
+            ),
+            M::up(
+                "CREATE TABLE deposits
+                   (sidechain_number INTEGER NOT NULL,
+                    address BLOB NOT NULl,
+                    amount INTEGER NOT NULL,
+                    txid BLOB NOT NULL);",
+            ),
+            M::up(
+                "CREATE TABLE mempool
+                   (txid BLOB UNIQUE NOT NULL,
+                    tx_data BLOB NOT NULL);",
+            ),
+        ]);
+
+        let mut db_connection =
             Connection::open(datadir.as_ref().join("db.sqlite")).into_diagnostic()?;
 
-        // Use migrations library for this.
-        // Use rusqlite_serde.
-        {
-            let number_of_tables = db_connection.query_row(
-                "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-                [],
-                |row| {let number: usize = row.get(0)?; Ok(number)}).into_diagnostic()?;
-            if number_of_tables == 0 {
-                db_connection.execute(
-                    "CREATE TABLE sidechain_proposals (number INTEGER NOT NULL, data BLOB NOT NULL, UNIQUE(number, data));",())
-                    .into_diagnostic()?;
-                db_connection.execute(
-                    "CREATE TABLE sidechain_acks (number INTEGER NOT NULl, data_hash BLOB NOT NULL, UNIQUE(number, data_hash));",())
-                    .into_diagnostic()?;
-                db_connection.execute(
-                    "CREATE TABLE bundle_proposals (sidechain_number INTEGER NOT NULL, bundle_hash BLOB NOT NULL, UNIQUE(sidechain_number, bundle_hash));", ())
-                    .into_diagnostic()?;
-                db_connection.execute(
-                    "CREATE TABLE bundle_acks (sidechain_number INTEGER NOT NULL, bundle_hash BLOB NOT NULL, UNIQUE(sidechain_number, bundle_hash));", ())
-                    .into_diagnostic()?;
-                db_connection
-                    .execute(
-                        "CREATE TABLE deposits (sidechain_number INTEGER NOT NULL, address BLOB NOT NULl, amount INTEGER NOT NULL, txid BLOB UNIQUE NOT NULL, transaction_bytes BLOB NOT NULL);",
-                        (),
-                    )
-                    .into_diagnostic()?;
-            }
-        }
+        migrations.to_latest(&mut db_connection).into_diagnostic()?;
 
         let enforcer_client = ValidatorClient::connect("http://[::1]:50051")
             .await
@@ -419,7 +434,7 @@ impl Wallet {
         Ok(sidechains)
     }
 
-    pub async fn get_ctip(&mut self, sidechain_number: u8) -> Result<(OutPoint, u64)> {
+    pub async fn get_ctip(&mut self, sidechain_number: u8) -> Result<Option<(OutPoint, u64)>> {
         let request = GetCtipRequest {
             sidechain_number: sidechain_number as u32,
         };
@@ -428,12 +443,17 @@ impl Wallet {
             .get_ctip(request)
             .await
             .into_diagnostic()?
-            .into_inner();
-        let txid = bitcoin::Txid::from_slice(&ctip.txid).into_diagnostic()?;
-        let vout = ctip.vout;
-        let outpoint = OutPoint { txid, vout };
-        let value = ctip.value;
-        Ok((outpoint, value))
+            .into_inner()
+            .ctip;
+        if let Some(ctip) = ctip {
+            let txid = bitcoin::Txid::from_slice(&ctip.txid).into_diagnostic()?;
+            let vout = ctip.vout;
+            let outpoint = OutPoint { txid, vout };
+            let value = ctip.value;
+            Ok(Some((outpoint, value)))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn delete_sidechain_proposals(&self) -> Result<()> {
@@ -443,13 +463,25 @@ impl Wallet {
         Ok(())
     }
 
+    pub async fn is_sidechain_active(&mut self, sidechain_number: u8) -> Result<bool> {
+        let sidechains = self.get_sidechains().await?;
+        for sidechain in sidechains {
+            if sidechain.sidechain_number == sidechain_number {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub async fn deposit(
         &mut self,
         sidechain_number: u8,
         address: &str,
         amount: u64,
     ) -> Result<()> {
-        let (ctip_outpoint, ctip_amount) = self.get_ctip(sidechain_number).await?;
+        if !self.is_sidechain_active(sidechain_number).await? {
+            return Err(miette!("sidechain slot {sidechain_number} is not active"));
+        }
         let message = [
             OP_DRIVECHAIN.to_u8(),
             OP_PUSHBYTES_1.to_u8(),
@@ -466,32 +498,53 @@ impl Wallet {
         let message = [vec![OP_RETURN.to_u8()], address.clone()].concat();
         let address_op_return = ScriptBuf::from_bytes(message);
 
-        let transaction = self
-            .bitcoin_wallet
-            .get_tx(&ctip_outpoint.txid, true)
-            .into_diagnostic()?
-            .unwrap();
+        let ctip = self.get_ctip(sidechain_number).await?;
+
+        // FIXME: Make this easier to read.
+        let ctip_amount = ctip.map(|ctip| ctip.1).unwrap_or(0);
 
         let mut builder = self.bitcoin_wallet.build_tx();
         builder
             .ordering(bdk::wallet::tx_builder::TxOrdering::Untouched)
             .add_recipient(op_drivechain.clone(), ctip_amount + amount)
-            .add_recipient(address_op_return, 0)
-            .add_foreign_utxo(
-                ctip_outpoint,
-                bitcoin::psbt::Input {
-                    non_witness_utxo: Some(transaction.transaction.unwrap()),
-                    ..bitcoin::psbt::Input::default()
-                },
-                0,
-            )
-            .into_diagnostic()?;
+            .add_recipient(address_op_return, 0);
 
-        let (mut psbt, details) = builder.finish().into_diagnostic()?;
+        if let Some((ctip_outpoint, _)) = ctip {
+            dbg!(ctip_outpoint);
+
+            let transaction_hex: String = self
+                .main_client
+                .send_request("getrawtransaction", &[json!(ctip_outpoint.txid)])
+                .into_diagnostic()?
+                .unwrap();
+            let transaction_bytes = hex::decode(&transaction_hex).unwrap();
+            let mut cursor = Cursor::new(transaction_bytes);
+            let transaction = Transaction::consensus_decode(&mut cursor).into_diagnostic()?;
+            /*
+            let transaction = self
+                .bitcoin_wallet
+                .get_tx(&ctip_outpoint.txid, true)
+                .into_diagnostic()?
+                .unwrap();
+            */
+
+            builder
+                .add_foreign_utxo(
+                    ctip_outpoint,
+                    bitcoin::psbt::Input {
+                        non_witness_utxo: Some(transaction),
+                        ..bitcoin::psbt::Input::default()
+                    },
+                    0,
+                )
+                .into_diagnostic()?;
+        }
+
+        let (mut psbt, _details) = builder.finish().into_diagnostic()?;
         self.bitcoin_wallet
             .sign(&mut psbt, SignOptions::default())
             .into_diagnostic()?;
-        let mut transaction = psbt.extract_tx();
+        let transaction = psbt.extract_tx();
         /*
         transaction.input.push(TxIn {
             previous_output: ctip_outpoint,
@@ -501,15 +554,21 @@ impl Wallet {
         });
         */
 
-        let mut transaction_bytes = vec![];
-        let mut cursor = Cursor::new(&mut transaction_bytes);
+        let mut tx_data = vec![];
+        let mut cursor = Cursor::new(&mut tx_data);
         transaction
             .consensus_encode(&mut cursor)
             .into_diagnostic()?;
         self.db_connection
             .execute(
-                "INSERT INTO deposits (sidechain_number, address, amount, txid, transaction_bytes) VALUES (?1, ?2, ?3, ?4, ?5)",
-                (sidechain_number, address, amount, transaction.txid().as_byte_array(), &transaction_bytes),
+                "INSERT INTO deposits (sidechain_number, address, amount, txid) VALUES (?1, ?2, ?3, ?4)",
+                (sidechain_number, address, amount, transaction.txid().as_byte_array()),
+            )
+            .into_diagnostic()?;
+        self.db_connection
+            .execute(
+                "INSERT INTO mempool (txid, tx_data) VALUES (?1, ?2)",
+                (transaction.txid().as_byte_array(), &tx_data),
             )
             .into_diagnostic()?;
         Ok(())
@@ -522,41 +581,63 @@ impl Wallet {
         Ok(())
     }
 
-    pub fn get_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
+    pub async fn get_deposits(&mut self, sidechain_number: u8) -> Result<()> {
+        let deposits = self
+            .enforcer_client
+            .get_deposits(GetDepositsRequest {
+                sidechain_number: sidechain_number as u32,
+            })
+            .await
+            .into_diagnostic()?
+            .into_inner()
+            .deposits;
+        dbg!(deposits);
+        Ok(())
+    }
+
+    pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
         let mut statement = match sidechain_number {
             Some(sidechain_number) => {
                 let mut statement = self
-            .db_connection
-            .prepare("SELECT sidechain_number, address, amount, transaction_bytes FROM deposits WHERE sidechain_number = ?1;").into_diagnostic()?;
-                statement.execute([sidechain_number]);
+                    .db_connection
+                    .prepare(
+                        "SELECT sidechain_number, address, amount, tx_data
+                         FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
+                         WHERE sidechain_number = ?1;",
+                    )
+                    .into_diagnostic()?;
                 statement
             }
             None => self
                 .db_connection
                 .prepare(
-                    "SELECT sidechain_number, address, amount, transaction_bytes FROM deposits;",
+                    "SELECT sidechain_number, address, amount, tx_data
+                     FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid;",
                 )
                 .into_diagnostic()?,
         };
-        let rows = statement
-            .query_map([], |row| {
-                let sidechain_number: u8 = row.get(0)?;
-                let address: Vec<u8> = row.get(1)?;
-                let amount: u64 = row.get(2)?;
-                let transaction_bytes: Vec<u8> = row.get(3)?;
-                let transaction = Transaction::consensus_decode_from_finite_reader(
-                    &mut transaction_bytes.as_slice(),
-                )
-                .unwrap();
-                let deposit = Deposit {
-                    sidechain_number,
-                    address,
-                    amount,
-                    transaction,
-                };
-                Ok(deposit)
-            })
-            .into_diagnostic()?;
+        // FIXME: Make this code more sane.
+        let func = |row: &Row| {
+            let sidechain_number: u8 = row.get(0)?;
+            let address: Vec<u8> = row.get(1)?;
+            let amount: u64 = row.get(2)?;
+            let tx_data: Vec<u8> = row.get(3)?;
+            let transaction =
+                Transaction::consensus_decode_from_finite_reader(&mut tx_data.as_slice()).unwrap();
+            let deposit = Deposit {
+                sidechain_number,
+                address,
+                amount,
+                transaction,
+            };
+            Ok(deposit)
+        };
+        let rows = match sidechain_number {
+            Some(sidechain_number) => statement
+                .query_map([sidechain_number], func)
+                .into_diagnostic()?,
+            None => statement.query_map([], func).into_diagnostic()?,
+        };
         let mut deposits = vec![];
         for deposit in rows {
             let deposit = deposit.into_diagnostic()?;
@@ -631,6 +712,7 @@ fn get_block_value(height: u32, fees: u64, network: Network) -> u64 {
     }
 }
 
+#[derive(Debug)]
 pub struct SidechainAck {
     pub sidechain_number: u8,
     pub data_hash: [u8; 32],
