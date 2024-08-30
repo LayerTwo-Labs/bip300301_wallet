@@ -12,7 +12,6 @@ pub enum Command {
     /// Mine a new block in regtest mode.
     Mine { count: Option<u32> },
 
-
     /// Show all transactions in the "mempool".
     Mempool,
 
@@ -57,4 +56,6 @@ pub enum Command {
     GetDeposits { sidechain_number: u8 },
     /// Encode sidechain address in the proper format.
     EncodeSidechainAddress { data: String },
+    /// Get new sidechain address
+    GetNewSidechainAddress { sidechain_number: u8 },
 }

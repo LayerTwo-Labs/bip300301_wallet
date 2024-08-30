@@ -17,6 +17,8 @@ use bip300301_messages::bitcoin::opcodes::OP_TRUE;
 use bip300301_messages::bitcoin::{Script, Witness};
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
+use ed25519_dalek::SigningKey;
+use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
 use std::collections::HashMap;
@@ -27,12 +29,21 @@ use tonic::IntoRequest;
 
 use rand::prelude::*;
 
+const SIDECHAIN_ADDRESS_LENGTH: usize = 20;
+
 pub struct Wallet {
     main_client: Client,
     enforcer_client: ValidatorClient<Channel>,
     bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
     db_connection: Connection,
     bitcoin_blockchain: ElectrumBlockchain,
+    sidechain_wallet: Connection,
+    mnemonic: Mnemonic,
+    // seed
+    // sidechain number
+    // index
+    // address (20 byte hash of public key)
+    // utxos
 }
 
 impl Wallet {
@@ -54,9 +65,8 @@ impl Wallet {
             "betray annual dog current tomorrow media ghost dynamic mule length sure salad",
         )
         .into_diagnostic()?;
-        let mnemonic_words = mnemonic.to_string();
         // Generate the extended key
-        let xkey: ExtendedKey = mnemonic.into_extended_key().into_diagnostic()?;
+        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().into_diagnostic()?;
         // Get xprv from the extended key
         let xprv = xkey
             .into_xprv(network)
@@ -79,50 +89,81 @@ impl Wallet {
 
         use rusqlite_migration::{Migrations, M};
 
-        // 1️⃣ Define migrations
-        let migrations = Migrations::new(vec![
-            M::up(
-                "CREATE TABLE sidechain_proposals
+        let sidechain_wallet = {
+            // 1️⃣ Define migrations
+            let migrations = Migrations::new(vec![M::up(
+                "CREATE TABLE sidechain_keys
+                   (sidechain_number INTEGER NOT NULL,
+                    key_index INTEGER NOT NULL,
+                    address BLOB NOT NULL,
+                    transaction_number INTEGER,
+                    output_number INTEGER,
+                    deposit_number INTEGER);",
+            )]);
+
+            // seed
+            // sidechain number
+            // index
+            // address (20 byte hash of public key)
+            // utxos
+
+            let mut sidechain_wallet =
+                Connection::open(datadir.as_ref().join("sidechain_wallet.sqlite"))
+                    .into_diagnostic()?;
+
+            migrations
+                .to_latest(&mut sidechain_wallet)
+                .into_diagnostic()?;
+            sidechain_wallet
+        };
+
+        let db_connection = {
+            // 1️⃣ Define migrations
+            let migrations = Migrations::new(vec![
+                M::up(
+                    "CREATE TABLE sidechain_proposals
                    (number INTEGER NOT NULL,
                     data BLOB NOT NULL,
                     UNIQUE(number, data));",
-            ),
-            M::up(
-                "CREATE TABLE sidechain_acks\
+                ),
+                M::up(
+                    "CREATE TABLE sidechain_acks
                    (number INTEGER NOT NULl,
                     data_hash BLOB NOT NULL,
                     UNIQUE(number, data_hash));",
-            ),
-            M::up(
-                "CREATE TABLE bundle_proposals
+                ),
+                M::up(
+                    "CREATE TABLE bundle_proposals
                    (sidechain_number INTEGER NOT NULL,
                     bundle_hash BLOB NOT NULL,
                     UNIQUE(sidechain_number, bundle_hash));",
-            ),
-            M::up(
-                "CREATE TABLE bundle_acks
+                ),
+                M::up(
+                    "CREATE TABLE bundle_acks
                    (sidechain_number INTEGER NOT NULL,
                     bundle_hash BLOB NOT NULL,
                     UNIQUE(sidechain_number, bundle_hash));",
-            ),
-            M::up(
-                "CREATE TABLE deposits
+                ),
+                M::up(
+                    "CREATE TABLE deposits
                    (sidechain_number INTEGER NOT NULL,
                     address BLOB NOT NULl,
                     amount INTEGER NOT NULL,
                     txid BLOB NOT NULL);",
-            ),
-            M::up(
-                "CREATE TABLE mempool
+                ),
+                M::up(
+                    "CREATE TABLE mempool
                    (txid BLOB UNIQUE NOT NULL,
                     tx_data BLOB NOT NULL);",
-            ),
-        ]);
+                ),
+            ]);
 
-        let mut db_connection =
-            Connection::open(datadir.as_ref().join("db.sqlite")).into_diagnostic()?;
+            let mut db_connection =
+                Connection::open(datadir.as_ref().join("db.sqlite")).into_diagnostic()?;
 
-        migrations.to_latest(&mut db_connection).into_diagnostic()?;
+            migrations.to_latest(&mut db_connection).into_diagnostic()?;
+            db_connection
+        };
 
         let enforcer_client = ValidatorClient::connect("http://[::1]:50051")
             .await
@@ -135,8 +176,48 @@ impl Wallet {
             enforcer_client,
             bitcoin_wallet,
             db_connection,
+            sidechain_wallet,
             bitcoin_blockchain,
+            mnemonic,
         })
+    }
+
+    pub fn get_new_sidechain_address(
+        &mut self,
+        sidechain_number: u8,
+        deposit_number: Option<u64>,
+    ) -> Result<[u8; SIDECHAIN_ADDRESS_LENGTH]> {
+        let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
+        let mut key_index = tx
+            .query_row("SELECT MAX(key_index) FROM sidechain_keys;", [], |row| {
+                Ok(row.get(0).unwrap_or(0))
+            })
+            .into_diagnostic()?;
+        key_index += 1;
+        let seed = self.mnemonic.to_seed("");
+        let xpriv = ExtendedSigningKey::from_seed(&seed).into_diagnostic()?;
+        let derivation_path = DerivationPath::new([
+            ChildIndex::Hardened(1),
+            ChildIndex::Hardened(0),
+            ChildIndex::Hardened(0),
+            ChildIndex::Hardened(sidechain_number as u32 + 1),
+            ChildIndex::Hardened(key_index),
+        ]);
+        let child = xpriv.derive(&derivation_path).into_diagnostic()?;
+        let verifying_key = child.verifying_key();
+        let verifying_key_bytes = verifying_key.to_bytes();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&verifying_key_bytes);
+        let mut address_reader = hasher.finalize_xof();
+        let mut address = [0; SIDECHAIN_ADDRESS_LENGTH];
+        address_reader.fill(&mut address);
+        tx.execute(
+            "INSERT INTO sidechain_keys (sidechain_number, key_index, address, deposit_number) VALUES (?1, ?2, ?3, ?4)",
+            (&sidechain_number, &key_index, &address, &deposit_number),
+        )
+        .into_diagnostic()?;
+        tx.commit().into_diagnostic()?;
+        Ok(address)
     }
 
     pub fn get_block_height(&self) -> Result<u32> {
@@ -436,7 +517,7 @@ impl Wallet {
         Ok(sidechains)
     }
 
-    pub async fn get_ctip(&mut self, sidechain_number: u8) -> Result<Option<(OutPoint, u64)>> {
+    pub async fn get_ctip(&mut self, sidechain_number: u8) -> Result<Option<(OutPoint, u64, u64)>> {
         let request = GetCtipRequest {
             sidechain_number: sidechain_number as u32,
         };
@@ -452,7 +533,8 @@ impl Wallet {
             let vout = ctip.vout;
             let outpoint = OutPoint { txid, vout };
             let value = ctip.value;
-            Ok(Some((outpoint, value)))
+            let sequence_number = ctip.sequence_number;
+            Ok(Some((outpoint, value, sequence_number)))
         } else {
             Ok(None)
         }
@@ -491,14 +573,28 @@ impl Wallet {
             OP_TRUE.to_u8(),
         ];
         let op_drivechain = ScriptBuf::from_bytes(message.into());
-        dbg!(&op_drivechain);
-
+        let ctip = self
+            .enforcer_client
+            .get_ctip(GetCtipRequest {
+                sidechain_number: sidechain_number as u32,
+            })
+            .await
+            .into_diagnostic()?
+            .into_inner()
+            .ctip;
+        let sequence_number = ctip.map(|ctip| ctip.sequence_number);
+        let deposit_number = match sequence_number {
+            Some(sequence_number) => sequence_number + 1,
+            None => 0,
+        };
         let address = match address {
             Some(address) => bs58::decode(address)
                 .with_check(None)
                 .into_vec()
                 .into_diagnostic()?,
-            None => rand::random::<[u8; 20]>().into(),
+            None => self
+                .get_new_sidechain_address(sidechain_number, Some(deposit_number))?
+                .to_vec(),
         };
         if address.len() != 20 {
             return Err(miette!(
@@ -520,7 +616,7 @@ impl Wallet {
             .add_recipient(op_drivechain.clone(), ctip_amount + amount)
             .add_recipient(address_op_return, 0);
 
-        if let Some((ctip_outpoint, _)) = ctip {
+        if let Some((ctip_outpoint, _, _)) = ctip {
             dbg!(ctip_outpoint);
 
             let transaction_hex: String = self
@@ -608,17 +704,14 @@ impl Wallet {
 
     pub fn get_pending_deposits(&self, sidechain_number: Option<u8>) -> Result<Vec<Deposit>> {
         let mut statement = match sidechain_number {
-            Some(sidechain_number) => {
-                let mut statement = self
-                    .db_connection
-                    .prepare(
-                        "SELECT sidechain_number, address, amount, tx_data
+            Some(_sidechain_number) => self
+                .db_connection
+                .prepare(
+                    "SELECT sidechain_number, address, amount, tx_data
                          FROM deposits INNER JOIN mempool ON deposits.txid = mempool.txid
                          WHERE sidechain_number = ?1;",
-                    )
-                    .into_diagnostic()?;
-                statement
-            }
+                )
+                .into_diagnostic()?,
             None => self
                 .db_connection
                 .prepare(

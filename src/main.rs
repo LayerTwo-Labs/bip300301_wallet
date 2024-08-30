@@ -18,6 +18,11 @@ async fn main() -> Result<()> {
     let mut wallet = Wallet::new("./db").await?;
 
     match cli.command {
+        Command::GetNewSidechainAddress { sidechain_number } => {
+            let address = wallet.get_new_sidechain_address(sidechain_number, None)?;
+            let address = bs58::encode(&address).with_check().into_string();
+            println!("{address}");
+        }
         Command::Mine { count } => {
             for _ in 0..count.unwrap_or(1) {
                 let sidechain_proposals = wallet.get_sidechain_proposals()?;
@@ -124,8 +129,10 @@ async fn main() -> Result<()> {
             println!("{block_height}");
         }
         Command::GetCtip { sidechain_number } => {
-            if let Some((outpoint, value)) = wallet.get_ctip(sidechain_number).await? {
-                println!("outpoint: {} value: {}", outpoint, value,);
+            if let Some((outpoint, value, sequence_number)) =
+                wallet.get_ctip(sidechain_number).await?
+            {
+                println!("outpoint: {outpoint} value: {value}, sequence_number: {sequence_number}");
             } else {
                 println!("no ctip");
             }
