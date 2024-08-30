@@ -26,3 +26,8 @@ bip300301_enforcer_proto = { git = "https://github.com/LayerTwo-Labs/bip300301_e
 bip300301_messages = { git = "https://github.com/LayerTwo-Labs/bip300301_messages" }
 rusqlite_migration = "*"
 serde_rusqlite = "*"
+
+blake3 = "1.5.4"
+ed25519-dalek = "2.1.1"
+ed25519-dalek-bip32 = "0.3.0"
+rand = "0.8.5"

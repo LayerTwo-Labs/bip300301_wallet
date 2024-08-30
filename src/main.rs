@@ -1,33 +1,18 @@
 // May the Barbarous Words inscribed upon this Black Mirror echo in All Eternity.
 
-use std::{future::pending, path::Path};
-
-use bdk::wallet::wallet_name_from_descriptor;
-use bip300301_messages::{
-    bitcoin::{
-        opcodes::{all::OP_PUSHBYTES_1, OP_TRUE},
-        ScriptBuf,
-    },
-    sha256d, CoinbaseBuilder, M4AckBundles, OP_DRIVECHAIN,
-};
-use miette::{miette, IntoDiagnostic, Result};
+use bip300301_messages::{sha256d, CoinbaseBuilder, M4AckBundles};
+use miette::{IntoDiagnostic, Result};
 
 use clap::Parser;
 use wallet::Wallet;
 
-use crate::{cli::Command, wallet::create_client};
+use crate::cli::Command;
 
 mod cli;
 mod wallet;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let message = [
-        OP_DRIVECHAIN.to_u8(),
-        OP_PUSHBYTES_1.to_u8(),
-        0,
-        OP_TRUE.to_u8(),
-    ];
     let cli = cli::Cli::parse();
 
     let mut wallet = Wallet::new("./db").await?;
@@ -191,12 +176,20 @@ async fn main() -> Result<()> {
         }
         Command::Deposit {
             sidechain_number,
-            address,
             amount,
+            address,
         } => {
-            println!("deposit sidechain number: {sidechain_number}, address: {address}, amount: {amount}");
+            println!(
+                "deposit sidechain number: {sidechain_number}, amount: {amount}{}",
+                match &address {
+                    Some(address) => {
+                        format!(", address: {address}")
+                    }
+                    None => "".to_string(),
+                }
+            );
             wallet
-                .deposit(sidechain_number, &address, amount.to_sat())
+                .deposit(sidechain_number, amount.to_sat(), &address)
                 .await?;
         }
         Command::GetDeposits { sidechain_number } => {
@@ -222,8 +215,15 @@ async fn main() -> Result<()> {
             wallet.get_deposits(sidechain_number).await?;
         }
         Command::EncodeSidechainAddress { data } => {
-            let address = bs58::encode(data).with_check().into_string();
-            println!("{address}");
+            if data.len() == 20 {
+                let address = bs58::encode(data).with_check().into_string();
+                println!("{address}");
+            } else {
+                println!(
+                    "invalid address length, is is {} bytes, when it must be 20 bytes",
+                    data.len()
+                );
+            }
         }
     }
 

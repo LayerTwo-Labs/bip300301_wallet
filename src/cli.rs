@@ -50,8 +50,8 @@ pub enum Command {
     /// Deposit funds to a sidechain address.
     Deposit {
         sidechain_number: u8,
-        address: String,
         amount: Amount,
+        address: Option<String>,
     },
     /// Get all deposits.
     GetDeposits { sidechain_number: u8 },

@@ -25,6 +25,8 @@ use std::path::Path;
 use tonic::transport::Channel;
 use tonic::IntoRequest;
 
+use rand::prelude::*;
+
 pub struct Wallet {
     main_client: Client,
     enforcer_client: ValidatorClient<Channel>,
@@ -476,8 +478,8 @@ impl Wallet {
     pub async fn deposit(
         &mut self,
         sidechain_number: u8,
-        address: &str,
         amount: u64,
+        address: &Option<String>,
     ) -> Result<()> {
         if !self.is_sidechain_active(sidechain_number).await? {
             return Err(miette!("sidechain slot {sidechain_number} is not active"));
@@ -491,10 +493,19 @@ impl Wallet {
         let op_drivechain = ScriptBuf::from_bytes(message.into());
         dbg!(&op_drivechain);
 
-        let address = bs58::decode(address)
-            .with_check(None)
-            .into_vec()
-            .into_diagnostic()?;
+        let address = match address {
+            Some(address) => bs58::decode(address)
+                .with_check(None)
+                .into_vec()
+                .into_diagnostic()?,
+            None => rand::random::<[u8; 20]>().into(),
+        };
+        if address.len() != 20 {
+            return Err(miette!(
+                "invalid address length, is is {} bytes, when it must be 20 bytes",
+                address.len()
+            ));
+        }
         let message = [vec![OP_RETURN.to_u8()], address.clone()].concat();
         let address_op_return = ScriptBuf::from_bytes(message);
 
