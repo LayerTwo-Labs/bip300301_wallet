@@ -4,6 +4,9 @@ wallet to work.
 Also the Bitcoin `-datadir` parameter must be set to `../../data/bitcoin/`
 relative to the working directory from which the wallet is being called.
 
+Bitcoin core must be run with the `-txindex` flag in order for sidechain
+deposits to work.
+
 WARNING
 
 This wallet MUST NOT be used in production in its current state, it is only
