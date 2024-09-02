@@ -17,11 +17,11 @@ use bip300301_messages::bitcoin::opcodes::OP_TRUE;
 use bip300301_messages::bitcoin::Witness;
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
+use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
+use cusf_sidechain_proto::sidechain::{SubmitTransactionRequest, SubmitTransactionResponse};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
-use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
-use cusf_sidechain_proto::sidechain::{SubmitTransactionRequest, SubmitTransactionResponse};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -108,7 +108,9 @@ impl Wallet {
                  transaction_number INTEGER,
                  output_number INTEGER,
                  deposit_number INTEGER,
-                 FOREIGN KEY (sidechain_number, key_index) REFERENCES keys(sidechain_number, key_index)
+                 FOREIGN KEY (sidechain_number, key_index) REFERENCES keys(sidechain_number, key_index),
+                 UNIQUE (transaction_number, output_number),
+                 UNIQUE (deposit_number)
                  );",
                 ),
             ]);
