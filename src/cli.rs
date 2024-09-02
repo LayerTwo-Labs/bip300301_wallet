@@ -12,6 +12,13 @@ pub enum Command {
     /// Mine a new block in regtest mode.
     Mine { count: Option<u32> },
 
+    Send {
+        sidechain_number: u8,
+        address: String,
+        value: Amount,
+        fee: Amount,
+    },
+
     /// Show all transactions in the "mempool".
     Mempool,
 

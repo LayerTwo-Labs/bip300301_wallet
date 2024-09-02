@@ -14,26 +14,25 @@ use bip300301_enforcer_proto::validator::{
 };
 use bip300301_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
 use bip300301_messages::bitcoin::opcodes::OP_TRUE;
-use bip300301_messages::bitcoin::{Script, Witness};
+use bip300301_messages::bitcoin::Witness;
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
-use ed25519_dalek::SigningKey;
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
+use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
+use cusf_sidechain_proto::sidechain::{SubmitTransactionRequest, SubmitTransactionResponse};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
-use tonic::IntoRequest;
-
-use rand::prelude::*;
 
 const SIDECHAIN_ADDRESS_LENGTH: usize = 20;
 
 pub struct Wallet {
     main_client: Client,
     enforcer_client: ValidatorClient<Channel>,
+    sidechain_clients: HashMap<u8, SidechainClient<Channel>>,
     bitcoin_wallet: bdk::Wallet<SqliteDatabase>,
     db_connection: Connection,
     bitcoin_blockchain: ElectrumBlockchain,
@@ -90,16 +89,29 @@ impl Wallet {
         use rusqlite_migration::{Migrations, M};
 
         let sidechain_wallet = {
-            // 1️⃣ Define migrations
-            let migrations = Migrations::new(vec![M::up(
-                "CREATE TABLE sidechain_keys
+            // FIXME: There can be many utxos with the same address.
+            // So we need a separate utxos table.
+            let migrations = Migrations::new(vec![
+                M::up(
+                    "CREATE TABLE keys
                    (sidechain_number INTEGER NOT NULL,
                     key_index INTEGER NOT NULL,
                     address BLOB NOT NULL,
-                    transaction_number INTEGER,
-                    output_number INTEGER,
-                    deposit_number INTEGER);",
-            )]);
+                    PRIMARY KEY(sidechain_number, key_index)
+                    );",
+                ),
+                M::up(
+                    "CREATE TABLE utxos
+                (sidechain_number INTEGER NOT NULL,
+                 key_index INTEGER NOT NULL,
+                 value INTEGER NOT NULL,
+                 transaction_number INTEGER,
+                 output_number INTEGER,
+                 deposit_number INTEGER,
+                 FOREIGN KEY (sidechain_number, key_index) REFERENCES keys(sidechain_number, key_index)
+                 );",
+                ),
+            ]);
 
             // seed
             // sidechain number
@@ -171,9 +183,17 @@ impl Wallet {
 
         let main_datadir = Path::new("../../data/bitcoin/");
         let main_client = create_client(main_datadir)?;
+
+        let sidechain_client = SidechainClient::connect("http://[::1]:50052")
+            .await
+            .into_diagnostic()?;
+        let mut sidechain_clients = HashMap::new();
+        sidechain_clients.insert(0, sidechain_client);
+
         Ok(Self {
             main_client,
             enforcer_client,
+            sidechain_clients,
             bitcoin_wallet,
             db_connection,
             sidechain_wallet,
@@ -185,11 +205,10 @@ impl Wallet {
     pub fn get_new_sidechain_address(
         &mut self,
         sidechain_number: u8,
-        deposit_number: Option<u64>,
-    ) -> Result<[u8; SIDECHAIN_ADDRESS_LENGTH]> {
+    ) -> Result<(u32, [u8; SIDECHAIN_ADDRESS_LENGTH])> {
         let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
         let mut key_index = tx
-            .query_row("SELECT MAX(key_index) FROM sidechain_keys;", [], |row| {
+            .query_row("SELECT MAX(key_index) FROM keys;", [], |row| {
                 Ok(row.get(0).unwrap_or(0))
             })
             .into_diagnostic()?;
@@ -212,12 +231,12 @@ impl Wallet {
         let mut address = [0; SIDECHAIN_ADDRESS_LENGTH];
         address_reader.fill(&mut address);
         tx.execute(
-            "INSERT INTO sidechain_keys (sidechain_number, key_index, address, deposit_number) VALUES (?1, ?2, ?3, ?4)",
-            (&sidechain_number, &key_index, &address, &deposit_number),
+            "INSERT INTO keys (sidechain_number, key_index, address) VALUES (?1, ?2, ?3)",
+            (&sidechain_number, &key_index, &address),
         )
         .into_diagnostic()?;
         tx.commit().into_diagnostic()?;
-        Ok(address)
+        Ok((key_index, address))
     }
 
     pub fn get_block_height(&self) -> Result<u32> {
@@ -557,6 +576,76 @@ impl Wallet {
         Ok(false)
     }
 
+    pub async fn send(
+        &mut self,
+        sidechain_number: u8,
+        address: &str,
+        value: u64,
+        fee: u64,
+    ) -> Result<()> {
+        let address = bs58::decode(address)
+            .with_check(None)
+            .into_vec()
+            .into_diagnostic()?;
+
+        let (_, change_address) = self.get_new_sidechain_address(sidechain_number)?;
+        let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
+        let transaction = {
+            let mut statement = tx.prepare("SELECT  value, deposit_number FROM utxos WHERE sidechain_number = ?1 ORDER BY value ASC").into_diagnostic()?;
+            let deposits: Vec<_> = statement
+                .query_map([sidechain_number], |row| {
+                    let value: u64 = row.get(0)?;
+                    let deposit_number: u64 = row.get(1)?;
+                    Ok((value, deposit_number))
+                })
+                .into_diagnostic()?
+                .collect();
+            let mut inputs = vec![];
+            let mut value_in = 0;
+            for deposit in deposits {
+                let (deposit_value, deposit_number) = deposit.unwrap();
+                value_in += deposit_value;
+                let input = cusf_sidechain_types::OutPoint::Deposit {
+                    sequence_number: deposit_number,
+                };
+                inputs.push(input);
+                if value_in >= value {
+                    break;
+                }
+            }
+            let mut outputs = vec![];
+            let output = cusf_sidechain_types::Output::Regular {
+                address: address.try_into().unwrap(),
+                value,
+            };
+            outputs.push(output);
+            let change_value = value_in - value - fee;
+            if change_value > 0 {
+                let change = cusf_sidechain_types::Output::Regular {
+                    address: change_address,
+                    value: change_value,
+                };
+                outputs.push(change);
+            }
+            let transaction = cusf_sidechain_types::Transaction { inputs, outputs };
+            transaction
+        };
+        tx.commit().into_diagnostic()?;
+
+        dbg!(&transaction);
+        let transaction_bytes = bincode::serialize(&transaction).into_diagnostic()?;
+        dbg!(hex::encode(&transaction_bytes));
+        let sidechain_client = self.sidechain_clients.get_mut(&0).unwrap();
+        let request = SubmitTransactionRequest {
+            transaction: transaction_bytes,
+        };
+        sidechain_client
+            .submit_transaction(request)
+            .await
+            .into_diagnostic()?;
+        Ok(())
+    }
+
     pub async fn deposit(
         &mut self,
         sidechain_number: u8,
@@ -587,14 +676,18 @@ impl Wallet {
             Some(sequence_number) => sequence_number + 1,
             None => 0,
         };
-        let address = match address {
-            Some(address) => bs58::decode(address)
-                .with_check(None)
-                .into_vec()
-                .into_diagnostic()?,
-            None => self
-                .get_new_sidechain_address(sidechain_number, Some(deposit_number))?
-                .to_vec(),
+        let (key_index, address) = match address {
+            Some(address) => (
+                None,
+                bs58::decode(address)
+                    .with_check(None)
+                    .into_vec()
+                    .into_diagnostic()?,
+            ),
+            None => {
+                let (key_index, address) = self.get_new_sidechain_address(sidechain_number)?;
+                (Some(key_index), address.to_vec())
+            }
         };
         if address.len() != 20 {
             return Err(miette!(
@@ -669,7 +762,7 @@ impl Wallet {
         self.db_connection
             .execute(
                 "INSERT INTO deposits (sidechain_number, address, amount, txid) VALUES (?1, ?2, ?3, ?4)",
-                (sidechain_number, address, amount, transaction.txid().as_byte_array()),
+                (sidechain_number, &address, amount, transaction.txid().as_byte_array()),
             )
             .into_diagnostic()?;
         self.db_connection
@@ -678,6 +771,14 @@ impl Wallet {
                 (transaction.txid().as_byte_array(), &tx_data),
             )
             .into_diagnostic()?;
+        if let Some(key_index) = key_index {
+            self.sidechain_wallet
+            .execute(
+                "INSERT INTO utxos (sidechain_number, key_index, value, deposit_number) VALUES (?1, ?2, ?3, ?4)",
+                (&sidechain_number, &key_index, &amount, &deposit_number),
+            )
+            .into_diagnostic()?;
+        }
         Ok(())
     }
 

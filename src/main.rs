@@ -19,9 +19,17 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::GetNewSidechainAddress { sidechain_number } => {
-            let address = wallet.get_new_sidechain_address(sidechain_number, None)?;
+            let (_, address) = wallet.get_new_sidechain_address(sidechain_number)?;
             let address = bs58::encode(&address).with_check().into_string();
             println!("{address}");
+        }
+        Command::Send {
+            sidechain_number,
+            address,
+            value,
+            fee,
+        } => {
+            wallet.send(sidechain_number, &address, value.to_sat(), fee.to_sat()).await?;
         }
         Command::Mine { count } => {
             for _ in 0..count.unwrap_or(1) {
