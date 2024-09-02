@@ -1,3 +1,5 @@
+// FIXME: Refactor wallet.
+
 use bip300301_messages::{sha256d, CoinbaseBuilder, M4AckBundles};
 use miette::{IntoDiagnostic, Result};
 
