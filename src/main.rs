@@ -1,5 +1,3 @@
-// May the Barbarous Words inscribed upon this Black Mirror echo in All Eternity.
-
 use bip300301_messages::{sha256d, CoinbaseBuilder, M4AckBundles};
 use miette::{IntoDiagnostic, Result};
 
