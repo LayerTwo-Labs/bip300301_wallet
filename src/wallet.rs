@@ -18,7 +18,9 @@ use bip300301_messages::bitcoin::Witness;
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
-use cusf_sidechain_proto::sidechain::{SubmitTransactionRequest, SubmitTransactionResponse};
+use cusf_sidechain_proto::sidechain::{
+    GetNextBlockRequest, SubmitTransactionRequest, SubmitTransactionResponse,
+};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
@@ -186,13 +188,9 @@ impl Wallet {
         let main_datadir = Path::new("../../data/bitcoin/");
         let main_client = create_client(main_datadir)?;
 
-        let sidechain_client = SidechainClient::connect("http://[::1]:50052")
-            .await
-            .into_diagnostic()?;
-        let mut sidechain_clients = HashMap::new();
-        sidechain_clients.insert(0, sidechain_client);
+        let sidechain_clients = HashMap::new();
 
-        Ok(Self {
+        let mut wallet = Self {
             main_client,
             enforcer_client,
             sidechain_clients,
@@ -201,7 +199,14 @@ impl Wallet {
             sidechain_wallet,
             bitcoin_blockchain,
             mnemonic,
-        })
+        };
+        let sidechains = wallet.get_sidechains().await?;
+        for sidechain in &sidechains {
+            let endpoint = format!("http://[::1]:{}", 50052 + sidechain.sidechain_number as u32);
+            let sidechain_client = SidechainClient::connect(endpoint).await.into_diagnostic()?;
+            wallet.sidechain_clients.insert(0, sidechain_client);
+        }
+        Ok(wallet)
     }
 
     pub fn get_new_sidechain_address(
@@ -851,6 +856,30 @@ impl Wallet {
             deposits.push(deposit);
         }
         Ok(deposits)
+    }
+
+    pub async fn get_next_block(
+        &mut self,
+        sidechain_number: u8,
+    ) -> Result<(
+        cusf_sidechain_types::Header,
+        Vec<cusf_sidechain_types::Transaction>,
+    )> {
+        let sidechain_client = match self.sidechain_clients.get_mut(&sidechain_number) {
+            Some(sidechain_client) => sidechain_client,
+            None => return Err(miette!("sidechain is not active")),
+        };
+        let block_bytes = sidechain_client
+            .get_next_block(GetNextBlockRequest {})
+            .await
+            .into_diagnostic()?
+            .into_inner()
+            .block;
+        let (header, transactions): (
+            cusf_sidechain_types::Header,
+            Vec<cusf_sidechain_types::Transaction>,
+        ) = bincode::deserialize(&block_bytes).into_diagnostic()?;
+        Ok((header, transactions))
     }
 }
 

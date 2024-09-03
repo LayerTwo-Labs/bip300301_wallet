@@ -1,6 +1,7 @@
 // FIXME: Refactor wallet.
 
 use bip300301_messages::{sha256d, CoinbaseBuilder, M4AckBundles};
+use cusf_sidechain_types::Hashable;
 use miette::{IntoDiagnostic, Result};
 
 use clap::Parser;
@@ -29,7 +30,9 @@ async fn main() -> Result<()> {
             value,
             fee,
         } => {
-            wallet.send(sidechain_number, &address, value.to_sat(), fee.to_sat()).await?;
+            wallet
+                .send(sidechain_number, &address, value.to_sat(), fee.to_sat())
+                .await?;
         }
         Command::Mine { count } => {
             for _ in 0..count.unwrap_or(1) {
@@ -239,6 +242,19 @@ async fn main() -> Result<()> {
                     data.len()
                 );
             }
+        }
+        Command::GetNextBlock { sidechain_number } => {
+            let (header, transactions) = wallet.get_next_block(sidechain_number).await?;
+            println!("header: {}", hex::encode(header.hash()));
+            println!(
+                "prev_main_block_hash: {}",
+                hex::encode(header.prev_main_block_hash)
+            );
+            println!(
+                "prev_side_block_hash: {}",
+                hex::encode(header.prev_side_block_hash)
+            );
+            println!("merkle_root: {}", hex::encode(header.merkle_root));
         }
     }
 

@@ -695,7 +695,7 @@ dependencies = [
 [[package]]
 name = "cusf_sidechain_types"
 version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf_sidechain_types#8e5a24fdf52fd911f6fada9a1371a47dd2b7aa60"
+source = "git+https://github.com/LayerTwo-Labs/cusf_sidechain_types#daeacaee7728e99567521dedf86ec16a3c48c64d"
 dependencies = [
  "bincode",
  "bitcoin 0.32.2",
