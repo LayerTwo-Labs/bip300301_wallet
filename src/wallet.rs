@@ -18,9 +18,8 @@ use bip300301_messages::bitcoin::Witness;
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
-use cusf_sidechain_proto::sidechain::{
-    GetNextBlockRequest, SubmitTransactionRequest, SubmitTransactionResponse,
-};
+use cusf_sidechain_proto::sidechain::{GetNextBlockRequest, SubmitTransactionRequest};
+use cusf_sidechain_types::{Hashable, HASH_LENGTH};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
@@ -856,6 +855,17 @@ impl Wallet {
             deposits.push(deposit);
         }
         Ok(deposits)
+    }
+
+    pub async fn get_bmm_hashes(&mut self) -> Result<Vec<[u8; HASH_LENGTH]>> {
+        let mut bmm_hashes = vec![];
+        let active_sidechains = self.get_sidechains().await?;
+        for sidechain in &active_sidechains {
+            let (header, _transactions) = self.get_next_block(sidechain.sidechain_number).await?;
+            let bmm_hash = header.hash();
+            bmm_hashes.push(bmm_hash);
+        }
+        Ok(bmm_hashes)
     }
 
     pub async fn get_next_block(

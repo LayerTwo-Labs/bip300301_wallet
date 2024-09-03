@@ -46,13 +46,11 @@ async fn main() -> Result<()> {
                 }
                 let sidechain_acks = wallet.get_sidechain_acks()?;
                 let pending_sidechain_proposals = wallet.get_pending_sidechain_proposals().await?;
-                dbg!(&sidechain_acks);
                 for sidechain_ack in sidechain_acks {
                     if let Some(sidechain_proposal) =
                         pending_sidechain_proposals.get(&sidechain_ack.sidechain_number)
                     {
                         if sidechain_proposal.data_hash == sidechain_ack.data_hash {
-                            dbg!(sidechain_proposal);
                             coinbase_builder = coinbase_builder.ack_sidechain(
                                 sidechain_ack.sidechain_number,
                                 &sidechain_ack.data_hash,
@@ -64,6 +62,10 @@ async fn main() -> Result<()> {
                         wallet.delete_sidechain_ack(&sidechain_ack)?;
                     }
                 }
+                let bmm_hashes = wallet.get_bmm_hashes().await?;
+                for bmm_hash in &bmm_hashes {
+                    coinbase_builder = coinbase_builder.bmm_accept(bmm_hash);
+                }
                 let coinbase_outputs = coinbase_builder.build();
 
                 let deposits = wallet.get_pending_deposits(None)?;
@@ -71,8 +73,6 @@ async fn main() -> Result<()> {
                     .into_iter()
                     .map(|deposit| deposit.transaction)
                     .collect();
-                // let deposit_transactions = vec![];
-
                 wallet.mine(&coinbase_outputs, deposit_transactions).await?;
                 wallet.delete_sidechain_proposals()?;
                 wallet.delete_deposits()?;
@@ -179,7 +179,6 @@ async fn main() -> Result<()> {
             let coinbase = CoinbaseBuilder::new()
                 .propose_bundle(sidechain_number, &bundle_hash)
                 .build();
-            dbg!(coinbase);
         }
         Command::AckBundles { bundles } => {
             let bundle_hashes: Vec<[u8; 32]> = bundles
@@ -190,7 +189,6 @@ async fn main() -> Result<()> {
                 upvotes: vec![0, 1, 2],
             };
             let coinbase = CoinbaseBuilder::new().ack_bundles(m4_ack_bundles).build();
-            dbg!(coinbase);
         }
         Command::Deposit {
             sidechain_number,
