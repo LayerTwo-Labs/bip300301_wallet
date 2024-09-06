@@ -18,8 +18,10 @@ use bip300301_messages::bitcoin::Witness;
 use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
-use cusf_sidechain_proto::sidechain::{GetNextBlockRequest, SubmitTransactionRequest};
-use cusf_sidechain_types::{Hashable, HASH_LENGTH};
+use cusf_sidechain_proto::sidechain::{
+    CollectTransactionsRequest, GetChainTipRequest, SubmitTransactionRequest,
+};
+use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
@@ -879,16 +881,28 @@ impl Wallet {
             Some(sidechain_client) => sidechain_client,
             None => return Err(miette!("sidechain is not active")),
         };
-        let block_bytes = sidechain_client
-            .get_next_block(GetNextBlockRequest {})
+        let prev_side_block_hash = sidechain_client
+            .get_chain_tip(GetChainTipRequest {})
             .await
             .into_diagnostic()?
             .into_inner()
-            .block;
-        let (header, transactions): (
-            cusf_sidechain_types::Header,
-            Vec<cusf_sidechain_types::Transaction>,
-        ) = bincode::deserialize(&block_bytes).into_diagnostic()?;
+            .block_hash;
+        let prev_side_block_hash: [u8; HASH_LENGTH] = prev_side_block_hash.try_into().unwrap();
+        let transactions_bytes = sidechain_client
+            .collect_transactions(CollectTransactionsRequest {})
+            .await
+            .into_diagnostic()?
+            .into_inner()
+            .transactions;
+        let transactions: Vec<cusf_sidechain_types::Transaction> =
+            bincode::deserialize(&transactions_bytes).into_diagnostic()?;
+        let coinbase = vec![];
+        let merkle_root =
+            cusf_sidechain_types::Header::compute_merkle_root(&coinbase, &transactions);
+        let header = cusf_sidechain_types::Header {
+            prev_side_block_hash,
+            merkle_root,
+        };
         Ok((header, transactions))
     }
 }

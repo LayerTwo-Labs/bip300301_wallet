@@ -245,10 +245,6 @@ async fn main() -> Result<()> {
             let (header, transactions) = wallet.get_next_block(sidechain_number).await?;
             println!("header: {}", hex::encode(header.hash()));
             println!(
-                "prev_main_block_hash: {}",
-                hex::encode(header.prev_main_block_hash)
-            );
-            println!(
                 "prev_side_block_hash: {}",
                 hex::encode(header.prev_side_block_hash)
             );
