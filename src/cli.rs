@@ -18,10 +18,8 @@ pub enum Command {
         value: Amount,
         fee: Amount,
     },
-
     /// Show all transactions in the "mempool".
     Mempool,
-
     /// Get balances available in the wallet.
     GetBalance,
     /// Get a list of all UTXOs in the wallet.

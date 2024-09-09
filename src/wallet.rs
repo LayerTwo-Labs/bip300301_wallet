@@ -19,7 +19,8 @@ use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
 use cusf_sidechain_proto::sidechain::{
-    CollectTransactionsRequest, GetChainTipRequest, SubmitBlockRequest, SubmitTransactionRequest,
+    CollectTransactionsRequest, ConnectMainBlockRequest, GetChainTipRequest, SubmitBlockRequest,
+    SubmitTransactionRequest,
 };
 use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
@@ -357,7 +358,7 @@ impl Wallet {
     }
 
     pub async fn mine(
-        &self,
+        &mut self,
         coinbase_outputs: &[TxOut],
         transactions: Vec<Transaction>,
     ) -> Result<()> {
@@ -377,6 +378,33 @@ impl Wallet {
             .main_client
             .send_request("submitblock", &[json!(block_hex)])
             .into_diagnostic()?;
+
+        let block_hash = block.header.block_hash().as_byte_array().to_vec();
+        let block_height: u32 = self
+            .main_client
+            .send_request("getblockcount", &[])
+            .into_diagnostic()?
+            .ok_or(miette!("failed to get block count"))?;
+        dbg!(block_height);
+        let bmm_hashes: Vec<Vec<u8>> = self
+            .get_bmm_hashes()
+            .await?
+            .into_iter()
+            .map(|bmm_hash| bmm_hash.to_vec())
+            .collect();
+        for (_sidechain_number, sidechain_client) in &mut self.sidechain_clients {
+            let request = ConnectMainBlockRequest {
+                block_height,
+                block_hash: block_hash.clone(),
+                bmm_hashes: bmm_hashes.clone(),
+                deposits: vec![],
+                withdrawal_bundle_event: None,
+            };
+            sidechain_client
+                .connect_main_block(request)
+                .await
+                .into_diagnostic()?;
+        }
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
     }
