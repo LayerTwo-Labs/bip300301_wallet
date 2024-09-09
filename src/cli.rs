@@ -65,6 +65,6 @@ pub enum Command {
     EncodeSidechainAddress { data: String },
     /// Get new sidechain address
     GetNewSidechainAddress { sidechain_number: u8 },
-    /// Get next block for a sidechain.
-    GetNextBlock { sidechain_number: u8 },
+    /// Mine a block for a sidechain.
+    MineSideBlock { sidechain_number: u8 },
 }

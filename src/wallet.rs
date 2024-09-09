@@ -19,7 +19,7 @@ use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
 use cusf_sidechain_proto::sidechain::{
-    CollectTransactionsRequest, GetChainTipRequest, SubmitTransactionRequest,
+    CollectTransactionsRequest, GetChainTipRequest, SubmitBlockRequest, SubmitTransactionRequest,
 };
 use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
@@ -863,7 +863,8 @@ impl Wallet {
         let mut bmm_hashes = vec![];
         let active_sidechains = self.get_sidechains().await?;
         for sidechain in &active_sidechains {
-            let (header, _transactions) = self.get_next_block(sidechain.sidechain_number).await?;
+            let (header, _coinbase, _transactions) =
+                self.get_next_block(sidechain.sidechain_number).await?;
             let bmm_hash = header.hash();
             bmm_hashes.push(bmm_hash);
         }
@@ -875,6 +876,7 @@ impl Wallet {
         sidechain_number: u8,
     ) -> Result<(
         cusf_sidechain_types::Header,
+        Vec<cusf_sidechain_types::Output>,
         Vec<cusf_sidechain_types::Transaction>,
     )> {
         let sidechain_client = match self.sidechain_clients.get_mut(&sidechain_number) {
@@ -903,7 +905,29 @@ impl Wallet {
             prev_side_block_hash,
             merkle_root,
         };
-        Ok((header, transactions))
+        println!("header: {}", hex::encode(header.hash()));
+        println!(
+            "prev_side_block_hash: {}",
+            hex::encode(header.prev_side_block_hash)
+        );
+        println!("merkle_root: {}", hex::encode(header.merkle_root));
+        let block = (header, coinbase, transactions);
+        Ok(block)
+    }
+
+    pub async fn mine_side_block(&mut self, sidechain_number: u8) -> Result<()> {
+        let block = self.get_next_block(sidechain_number).await?;
+        let sidechain_client = match self.sidechain_clients.get_mut(&sidechain_number) {
+            Some(sidechain_client) => sidechain_client,
+            None => return Err(miette!("sidechain is not active")),
+        };
+        let block = bincode::serialize(&block).into_diagnostic()?;
+        let request = SubmitBlockRequest { block };
+        sidechain_client
+            .submit_block(request)
+            .await
+            .into_diagnostic()?;
+        Ok(())
     }
 }
 
