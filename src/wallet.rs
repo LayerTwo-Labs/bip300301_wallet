@@ -983,7 +983,7 @@ M::up(
         main_address: Option<[u8; MAIN_ADDRESS_LENGTH]>,
         main_fee: Option<u64>,
     ) -> Result<()> {
-        let (sidechain_number, outpoints_values, outputs) = self.get_pending_transaction()?;
+        let (sidechain_number, ids_outpoints_values, outputs) = self.get_pending_transaction()?;
         let address: [u8; ADDRESS_LENGTH] = match address {
             Some(address) => address,
             None => {
@@ -991,9 +991,9 @@ M::up(
                 address
             }
         };
-        let value_in: u64 = outpoints_values
+        let value_in: u64 = ids_outpoints_values
             .iter()
-            .map(|(_outpoint, value)| value)
+            .map(|(_id, _outpoint, value)| value)
             .sum();
         let mut value_out: u64 = outputs.iter().map(|output| output.total_value()).sum();
         let output = match (main_address, main_fee) {
@@ -1072,10 +1072,11 @@ M::up(
     }
 
     pub async fn submit_pending_transaction(&mut self) -> Result<()> {
-        let (sidechain_number, outpoints_values, outputs) = self.get_pending_transaction()?;
-        let inputs = outpoints_values
-            .into_iter()
-            .map(|(outpoint, _value)| outpoint)
+        let (sidechain_number, ids_outpoints_values, outputs) = self.get_pending_transaction()?;
+        let inputs = ids_outpoints_values
+            .iter()
+            .map(|(_id, outpoint, _value)| outpoint)
+            .cloned()
             .collect();
         let transaction = cusf_sidechain_types::Transaction { inputs, outputs };
         let transaction_bytes = bincode::serialize(&transaction).into_diagnostic()?;
@@ -1087,6 +1088,16 @@ M::up(
             .submit_transaction(request)
             .await
             .into_diagnostic()?;
+        {
+            // FIXME: This is a crutch.
+            // TODO: Implement actual syncing of utxos from sidechain.
+            let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
+            for (id, _outpoint, _value) in &ids_outpoints_values {
+                tx.execute("DELETE FROM utxos WHERE id = ?1", (id,))
+                    .into_diagnostic()?;
+            }
+            tx.commit().into_diagnostic()?;
+        }
         self.clear_pending_transaction()?;
         Ok(())
     }
@@ -1095,7 +1106,7 @@ M::up(
         &self,
     ) -> Result<(
         u8,
-        Vec<(cusf_sidechain_types::OutPoint, u64)>,
+        Vec<(u64, cusf_sidechain_types::OutPoint, u64)>,
         Vec<cusf_sidechain_types::Output>,
     )> {
         let mut statement = self
@@ -1144,10 +1155,10 @@ M::up(
                 .into_diagnostic()?
         };
 
-        let mut outpoints_values = vec![];
+        let mut ids_outpoints_values = vec![];
         for utxo in utxos {
             let (
-                _id,
+                id,
                 value,
                 transaction_number,
                 transaction_output_number,
@@ -1181,7 +1192,7 @@ M::up(
                     todo!();
                 }
             };
-            outpoints_values.push((outpoint, value));
+            ids_outpoints_values.push((id, outpoint, value));
         }
 
         let mut statement = self
@@ -1224,7 +1235,7 @@ M::up(
             outputs.push(output);
         }
 
-        Ok((sidechain_number, outpoints_values, outputs))
+        Ok((sidechain_number, ids_outpoints_values, outputs))
     }
 
     pub fn get_side_utxos(

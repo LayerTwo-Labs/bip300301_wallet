@@ -271,7 +271,7 @@ async fn main() -> Result<()> {
             println!("inputs:");
             println!();
             let mut value_in = 0;
-            for (outpoint, value) in outpoints_values {
+            for (_id, outpoint, value) in outpoints_values {
                 println!("{outpoint} : {}", Amount::from_sat(value));
                 value_in += value;
             }
