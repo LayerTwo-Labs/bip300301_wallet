@@ -1,4 +1,4 @@
-use bdk::bitcoin::{Address, Amount};
+use bdk::bitcoin::Amount;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
