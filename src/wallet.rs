@@ -1071,6 +1071,26 @@ M::up(
         Ok(())
     }
 
+    pub async fn submit_pending_transaction(&mut self) -> Result<()> {
+        let (sidechain_number, outpoints_values, outputs) = self.get_pending_transaction()?;
+        let inputs = outpoints_values
+            .into_iter()
+            .map(|(outpoint, _value)| outpoint)
+            .collect();
+        let transaction = cusf_sidechain_types::Transaction { inputs, outputs };
+        let transaction_bytes = bincode::serialize(&transaction).into_diagnostic()?;
+        let sidechain_client = self.sidechain_clients.get_mut(&sidechain_number).unwrap();
+        let request = SubmitTransactionRequest {
+            transaction: transaction_bytes,
+        };
+        sidechain_client
+            .submit_transaction(request)
+            .await
+            .into_diagnostic()?;
+        self.clear_pending_transaction()?;
+        Ok(())
+    }
+
     pub fn get_pending_transaction(
         &self,
     ) -> Result<(

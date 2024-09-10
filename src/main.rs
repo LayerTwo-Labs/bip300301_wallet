@@ -1,5 +1,6 @@
 // FIXME: Refactor wallet.
 // FIXME: Implement authorizations.
+// FIXME: Implement syncing wallet UTXO set with sidechain UTXO sets.
 
 use bip300301_messages::{
     bitcoin::{
