@@ -19,14 +19,14 @@ use bip300301_messages::OP_DRIVECHAIN;
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
 use cusf_sidechain_proto::sidechain::{
-    CollectTransactionsRequest, ConnectMainBlockRequest, GetChainTipRequest, SubmitBlockRequest,
-    SubmitTransactionRequest,
+    CollectTransactionsRequest, ConnectMainBlockRequest, GetChainTipRequest, GetUtxoSetRequest,
+    SubmitBlockRequest, SubmitTransactionRequest,
 };
 use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH, MAIN_ADDRESS_LENGTH};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
@@ -106,6 +106,7 @@ impl Wallet {
                  sidechain_number INTEGER NOT NULL,
                  key_index INTEGER NOT NULL,
                  value INTEGER NOT NULL,
+                 main_fee INTEGER,
                  transaction_number INTEGER,
                  transaction_output_number INTEGER,
                  block_number INTEGER,
@@ -1104,7 +1105,9 @@ impl Wallet {
             })
             .into_diagnostic()?
             .collect();
-
+        if utxos.len() == 0 {
+            return Err(miette!("no pending transaction"));
+        }
         let sidechain_number = {
             let (utxo_id, _, _, _, _, _, _) = utxos[0].as_ref().unwrap();
             self.sidechain_wallet
@@ -1200,6 +1203,125 @@ impl Wallet {
         }
 
         Ok((sidechain_number, ids_outpoints_values, outputs))
+    }
+
+    pub async fn sync_side_utxos(&mut self, sidechain_number: u8) -> Result<()> {
+        let sidechain_client = self.sidechain_clients.get_mut(&sidechain_number).unwrap();
+        let utxos = sidechain_client
+            .get_utxo_set(GetUtxoSetRequest {})
+            .await
+            .into_diagnostic()?
+            .into_inner()
+            .utxos;
+        let utxos: HashMap<cusf_sidechain_types::OutPoint, cusf_sidechain_types::Output> =
+            bincode::deserialize(&utxos).into_diagnostic()?;
+        let wallet_utxos = self.get_side_utxos(sidechain_number)?;
+        let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
+        for (id, (outpoint, _key_index, _value)) in &wallet_utxos {
+            if !utxos.contains_key(outpoint) {
+                tx.execute("DELETE FROM utxos WHERE id = ?1", (id,))
+                    .into_diagnostic()?;
+            }
+        }
+        let wallet_addresses = {
+            let mut statement = tx
+                .prepare("SELECT address, key_index FROM keys WHERE sidechain_number = ?1")
+                .into_diagnostic()?;
+            let addresses: HashMap<[u8; ADDRESS_LENGTH], u32> = statement
+                .query_map([sidechain_number], |row| {
+                    let address: Vec<u8> = row.get(0)?;
+                    let address: [u8; ADDRESS_LENGTH] = address.try_into().unwrap();
+                    let key_index: u32 = row.get(1)?;
+                    Ok((address, key_index))
+                })
+                .into_diagnostic()?
+                .map(|address| address.unwrap())
+                .collect();
+            addresses
+        };
+        for (outpoint, output) in &utxos {
+            let address = output.address();
+            if let Some(key_index) = wallet_addresses.get(&address) {
+                let (value, main_fee) = match output {
+                    cusf_sidechain_types::Output::Withdrawal { value, fee, .. } => {
+                        (value, Some(fee))
+                    }
+                    cusf_sidechain_types::Output::Regular { value, .. } => (value, None),
+                };
+                match outpoint {
+                    cusf_sidechain_types::OutPoint::Regular {
+                        transaction_number,
+                        output_number,
+                    } => {
+                        tx.execute(
+                            "INSERT INTO utxos
+                            (sidechain_number,
+                             key_index,
+                             value,
+                             main_fee,
+                             transaction_number,
+                             transaction_output_number)
+                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            (
+                                sidechain_number,
+                                key_index,
+                                value,
+                                main_fee,
+                                transaction_number,
+                                output_number,
+                            ),
+                        )
+                        .into_diagnostic()?;
+                    }
+                    cusf_sidechain_types::OutPoint::Deposit { sequence_number } => {
+                        tx.execute(
+                            "INSERT INTO utxos
+                            (sidechain_number,
+                             key_index,
+                             value,
+                             main_fee,
+                             deposit_number)
+                            VALUES (?1, ?2, ?3, ?4, ?5)",
+                            (
+                                sidechain_number,
+                                key_index,
+                                value,
+                                main_fee,
+                                sequence_number,
+                            ),
+                        )
+                        .into_diagnostic()?;
+                    }
+                    cusf_sidechain_types::OutPoint::Coinbase {
+                        block_number,
+                        output_number,
+                    } => {
+                        tx.execute(
+                            "INSERT INTO utxos
+                            (sidechain_number,
+                             key_index,
+                             value,
+                             main_fee,
+                             block_number,
+                             coinbase_output_number)
+                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            (
+                                sidechain_number,
+                                key_index,
+                                value,
+                                main_fee,
+                                block_number,
+                                output_number,
+                            ),
+                        )
+                        .into_diagnostic()?;
+                    }
+                }
+            }
+            println!("{outpoint} : {}", Amount::from_sat(output.total_value()));
+        }
+        tx.commit().into_diagnostic()?;
+        Ok(())
     }
 
     pub fn get_side_utxos(

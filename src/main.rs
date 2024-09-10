@@ -1,6 +1,5 @@
 // FIXME: Refactor wallet.
 // FIXME: Implement authorizations.
-// FIXME: Implement syncing wallet UTXO set with sidechain UTXO sets.
 
 use bip300301_messages::{
     bitcoin::{
@@ -356,6 +355,9 @@ async fn main() -> Result<()> {
             };
             let main_fee = main_fee.map(|main_fee| main_fee.to_sat());
             wallet.add_output(value, address, main_address, main_fee)?;
+        }
+        Command::SyncSideUtxos { sidechain_number } => {
+            wallet.sync_side_utxos(sidechain_number).await?;
         }
     }
 
