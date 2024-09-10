@@ -91,8 +91,6 @@ impl Wallet {
         use rusqlite_migration::{Migrations, M};
 
         let sidechain_wallet = {
-            // FIXME: There can be many utxos with the same address.
-            // So we need a separate utxos table.
             let migrations = Migrations::new(vec![
                 M::up(
                     "CREATE TABLE keys
@@ -461,11 +459,6 @@ impl Wallet {
                 (sidechain_number, data),
             )
             .into_diagnostic()?;
-        let coinbase = CoinbaseBuilder::new()
-            .propose_sidechain(sidechain_number, data)
-            .build();
-        let data_hash = bip300301_messages::sha256d(data);
-        let data_hash = hex::encode(data_hash);
         Ok(())
     }
 
@@ -761,14 +754,6 @@ impl Wallet {
             let transaction_bytes = hex::decode(&transaction_hex).unwrap();
             let mut cursor = Cursor::new(transaction_bytes);
             let transaction = Transaction::consensus_decode(&mut cursor).into_diagnostic()?;
-            /*
-            let transaction = self
-                .bitcoin_wallet
-                .get_tx(&ctip_outpoint.txid, true)
-                .into_diagnostic()?
-                .unwrap();
-            */
-
             builder
                 .add_foreign_utxo(
                     ctip_outpoint,
@@ -786,14 +771,6 @@ impl Wallet {
             .sign(&mut psbt, SignOptions::default())
             .into_diagnostic()?;
         let transaction = psbt.extract_tx();
-        /*
-        transaction.input.push(TxIn {
-            previous_output: ctip_outpoint,
-            script_sig: ScriptBuf::new(),
-            sequence: Sequence::MAX,
-            witness: Witness::new(),
-        });
-        */
 
         let mut tx_data = vec![];
         let mut cursor = Cursor::new(&mut tx_data);
@@ -840,6 +817,7 @@ impl Wallet {
             .into_diagnostic()?
             .into_inner()
             .deposits;
+        dbg!(deposits);
         Ok(())
     }
 
