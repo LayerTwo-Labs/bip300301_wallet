@@ -2,13 +2,13 @@
 
 use bip300301_messages::{
     bitcoin::{
-        address::{NetworkChecked, NetworkUnchecked, Payload},
+        address::{NetworkChecked, Payload},
         hashes::Hash,
         Address, Amount, Network, PubkeyHash,
     },
     sha256d, CoinbaseBuilder, M4AckBundles,
 };
-use cusf_sidechain_types::{ADDRESS_LENGTH, MAIN_ADDRESS_LENGTH};
+use cusf_sidechain_types::ADDRESS_LENGTH;
 use miette::{IntoDiagnostic, Result};
 use std::str::FromStr;
 
