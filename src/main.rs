@@ -318,6 +318,9 @@ async fn main() -> Result<()> {
         Command::ClearPendingTransaction => {
             wallet.clear_pending_transaction()?;
         }
+        Command::SubmitPendingTransaction => {
+            wallet.submit_pending_transaction().await?;
+        }
         Command::AddOutput {
             value,
             address,

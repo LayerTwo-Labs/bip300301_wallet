@@ -71,6 +71,8 @@ pub enum Command {
     Spend { utxo_id: u64 },
     /// Clear inputs and outputs for pending sidechain transaction.
     ClearPendingTransaction,
+    /// Submit pending sidechain transaction.
+    SubmitPendingTransaction,
     /// Get pending sidechain transaction.
     GetPendingTransaction,
     AddOutput {
