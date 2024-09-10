@@ -31,8 +31,6 @@ use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
 
-const SIDECHAIN_ADDRESS_LENGTH: usize = 20;
-
 pub struct Wallet {
     main_client: Client,
     enforcer_client: ValidatorClient<Channel>,
@@ -128,7 +126,7 @@ impl Wallet {
                     FOREIGN KEY(utxo_id) REFERENCES utxo(id)
                     );",
                 ),
-M::up(
+                M::up(
                     "CREATE TABLE transaction_outputs
                    (id INTEGER NOT NULL PRIMARY KEY,
                     sidechain_number INTEGER NOT NULL,
@@ -234,7 +232,7 @@ M::up(
     pub fn get_new_sidechain_address(
         &mut self,
         sidechain_number: u8,
-    ) -> Result<(u32, [u8; SIDECHAIN_ADDRESS_LENGTH])> {
+    ) -> Result<(u32, [u8; ADDRESS_LENGTH])> {
         let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
         let mut key_index = tx
             .query_row("SELECT MAX(key_index) FROM keys;", [], |row| {
@@ -257,7 +255,7 @@ M::up(
         let mut hasher = blake3::Hasher::new();
         hasher.update(&verifying_key_bytes);
         let mut address_reader = hasher.finalize_xof();
-        let mut address = [0; SIDECHAIN_ADDRESS_LENGTH];
+        let mut address = [0; ADDRESS_LENGTH];
         address_reader.fill(&mut address);
         tx.execute(
             "INSERT INTO keys (sidechain_number, key_index, address) VALUES (?1, ?2, ?3)",
