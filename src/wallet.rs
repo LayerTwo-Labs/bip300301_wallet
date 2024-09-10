@@ -362,7 +362,6 @@ impl Wallet {
         ]
         .concat();
         let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
-        dbg!(&script_pubkey);
         block.txdata[0].output.push(TxOut {
             script_pubkey,
             value: 0,
@@ -465,13 +464,8 @@ impl Wallet {
         let coinbase = CoinbaseBuilder::new()
             .propose_sidechain(sidechain_number, data)
             .build();
-
-        dbg!(coinbase);
-
         let data_hash = bip300301_messages::sha256d(data);
         let data_hash = hex::encode(data_hash);
-
-        dbg!(data_hash);
         Ok(())
     }
 
@@ -683,10 +677,7 @@ impl Wallet {
             transaction
         };
         tx.commit().into_diagnostic()?;
-
-        dbg!(&transaction);
         let transaction_bytes = bincode::serialize(&transaction).into_diagnostic()?;
-        dbg!(hex::encode(&transaction_bytes));
         let sidechain_client = self.sidechain_clients.get_mut(&0).unwrap();
         let request = SubmitTransactionRequest {
             transaction: transaction_bytes,
@@ -762,8 +753,6 @@ impl Wallet {
             .add_recipient(address_op_return, 0);
 
         if let Some((ctip_outpoint, _, _)) = ctip {
-            dbg!(ctip_outpoint);
-
             let transaction_hex: String = self
                 .main_client
                 .send_request("getrawtransaction", &[json!(ctip_outpoint.txid)])
@@ -851,7 +840,6 @@ impl Wallet {
             .into_diagnostic()?
             .into_inner()
             .deposits;
-        dbg!(deposits);
         Ok(())
     }
 
