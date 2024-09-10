@@ -22,11 +22,11 @@ use cusf_sidechain_proto::sidechain::{
     CollectTransactionsRequest, ConnectMainBlockRequest, GetChainTipRequest, SubmitBlockRequest,
     SubmitTransactionRequest,
 };
-use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH};
+use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH, MAIN_ADDRESS_LENGTH};
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
@@ -106,16 +106,36 @@ impl Wallet {
                 ),
                 M::up(
                     "CREATE TABLE utxos
-                (sidechain_number INTEGER NOT NULL,
+                (id INTEGER NOT NULL PRIMARY KEY,
+                 sidechain_number INTEGER NOT NULL,
                  key_index INTEGER NOT NULL,
                  value INTEGER NOT NULL,
                  transaction_number INTEGER,
-                 output_number INTEGER,
+                 transaction_output_number INTEGER,
+                 block_number INTEGER,
+                 coinbase_output_number INTEGER,
                  deposit_number INTEGER,
                  FOREIGN KEY (sidechain_number, key_index) REFERENCES keys(sidechain_number, key_index),
-                 UNIQUE (transaction_number, output_number),
+                 UNIQUE (transaction_number, transaction_output_number),
+                 UNIQUE (block_number, coinbase_output_number),
                  UNIQUE (deposit_number)
-                 );",
+                 );"),
+                M::up(
+                    "CREATE TABLE transaction_inputs
+                   (id INTEGER NOT NULL PRIMARY KEY,
+                    sidechain_number INTEGER NOT NULL,
+                    utxo_id INTEGER NOT NULL UNIQUE,
+                    FOREIGN KEY(utxo_id) REFERENCES utxo(id)
+                    );",
+                ),
+M::up(
+                    "CREATE TABLE transaction_outputs
+                   (id INTEGER NOT NULL PRIMARY KEY,
+                    sidechain_number INTEGER NOT NULL,
+                    address BLOB NOT NULL,
+                    value INTEGER NOT NULL,
+                    main_address BLOB,
+                    main_fee INTEGER);",
                 ),
             ]);
 
@@ -369,7 +389,6 @@ impl Wallet {
                 break;
             }
         }
-        dbg!(&block);
         let mut block_bytes = vec![];
         block.consensus_encode(&mut block_bytes).into_diagnostic()?;
         let block_hex = hex::encode(block_bytes);
@@ -385,7 +404,6 @@ impl Wallet {
             .send_request("getblockcount", &[])
             .into_diagnostic()?
             .ok_or(miette!("failed to get block count"))?;
-        dbg!(block_height);
         let bmm_hashes: Vec<Vec<u8>> = self
             .get_bmm_hashes()
             .await?
@@ -627,7 +645,7 @@ impl Wallet {
         let (_, change_address) = self.get_new_sidechain_address(sidechain_number)?;
         let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
         let transaction = {
-            let mut statement = tx.prepare("SELECT  value, deposit_number FROM utxos WHERE sidechain_number = ?1 ORDER BY value ASC").into_diagnostic()?;
+            let mut statement = tx.prepare("SELECT value, deposit_number FROM utxos WHERE sidechain_number = ?1 ORDER BY value ASC").into_diagnostic()?;
             let deposits: Vec<_> = statement
                 .query_map([sidechain_number], |row| {
                     let value: u64 = row.get(0)?;
@@ -956,6 +974,317 @@ impl Wallet {
             .await
             .into_diagnostic()?;
         Ok(())
+    }
+
+    pub fn add_output(
+        &mut self,
+        value: u64,
+        address: Option<[u8; ADDRESS_LENGTH]>,
+        main_address: Option<[u8; MAIN_ADDRESS_LENGTH]>,
+        main_fee: Option<u64>,
+    ) -> Result<()> {
+        let (sidechain_number, outpoints_values, outputs) = self.get_pending_transaction()?;
+        let address: [u8; ADDRESS_LENGTH] = match address {
+            Some(address) => address,
+            None => {
+                let (_key_index, address) = self.get_new_sidechain_address(sidechain_number)?;
+                address
+            }
+        };
+        let value_in: u64 = outpoints_values
+            .iter()
+            .map(|(_outpoint, value)| value)
+            .sum();
+        let mut value_out: u64 = outputs.iter().map(|output| output.total_value()).sum();
+        let output = match (main_address, main_fee) {
+            (Some(main_address), Some(main_fee)) => cusf_sidechain_types::Output::Withdrawal {
+                address,
+                main_address,
+                value,
+                fee: main_fee,
+            },
+            (None, None) => cusf_sidechain_types::Output::Regular { address, value },
+            _ => {
+                return Err(miette!("invalid arguments to add_output"));
+            }
+        };
+        value_out += output.total_value();
+        if value_in < value_out {
+            return Err(miette!("not enough value in"));
+        }
+        self.sidechain_wallet
+            .execute(
+                "INSERT INTO transaction_outputs
+            (sidechain_number, address, value, main_address, main_fee)
+            VALUES (?1, ?2, ?3, ?4, ?5)",
+                (sidechain_number, address, value, main_address, main_fee),
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn spend(&self, utxo_id: u64) -> Result<()> {
+        let utxo_sidechain_number = self
+            .sidechain_wallet
+            .query_row(
+                "SELECT sidechain_number FROM utxos WHERE id = ?1",
+                [utxo_id],
+                |row| {
+                    let sidechain_number: u8 = row.get(0)?;
+                    Ok(sidechain_number)
+                },
+            )
+            .into_diagnostic()?;
+        let mut statement = self
+            .sidechain_wallet
+            .prepare("SELECT sidechain_number FROM transaction_inputs")
+            .into_diagnostic()?;
+        let sidechain_numbers: Vec<_> = statement
+            .query_map([], |row| {
+                let sidechain_number: u8 = row.get(0)?;
+                Ok(sidechain_number)
+            })
+            .into_diagnostic()?
+            .collect();
+        for sidechain_number in sidechain_numbers {
+            let sidechain_number = sidechain_number.into_diagnostic()?;
+            if utxo_sidechain_number != sidechain_number {
+                return Err(miette!("trying to add a utxo from sidechain {utxo_sidechain_number} to a transaction for sidechainn {sidechain_number}"));
+            }
+        }
+        self.sidechain_wallet
+            .execute(
+                "INSERT INTO transaction_inputs (sidechain_number, utxo_id) VALUES (?1, ?2)",
+                (utxo_sidechain_number, utxo_id),
+            )
+            .into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn clear_pending_transaction(&mut self) -> Result<()> {
+        let tx = self.sidechain_wallet.transaction().into_diagnostic()?;
+        tx.execute("DELETE FROM transaction_inputs", ())
+            .into_diagnostic()?;
+        tx.execute("DELETE FROM transaction_outputs", ())
+            .into_diagnostic()?;
+        tx.commit().into_diagnostic()?;
+        Ok(())
+    }
+
+    pub fn get_pending_transaction(
+        &self,
+    ) -> Result<(
+        u8,
+        Vec<(cusf_sidechain_types::OutPoint, u64)>,
+        Vec<cusf_sidechain_types::Output>,
+    )> {
+        let mut statement = self
+            .sidechain_wallet
+            .prepare(
+                "SELECT id, value,
+                transaction_number, transaction_output_number,
+                block_number, coinbase_output_number,
+                deposit_number
+                FROM utxos WHERE id IN (SELECT utxo_id FROM transaction_inputs)",
+            )
+            .into_diagnostic()?;
+        let utxos: Vec<_> = statement
+            .query_map([], |row| {
+                let id: u64 = row.get(0)?;
+                let value: u64 = row.get(1)?;
+                let transaction_number: Option<u64> = row.get(2)?;
+                let transaction_output_number: Option<u8> = row.get(3)?;
+                let block_number: Option<u32> = row.get(4)?;
+                let coinbases_output_number: Option<u8> = row.get(5)?;
+                let deposit_number: Option<u64> = row.get(6)?;
+                Ok((
+                    id,
+                    value,
+                    transaction_number,
+                    transaction_output_number,
+                    block_number,
+                    coinbases_output_number,
+                    deposit_number,
+                ))
+            })
+            .into_diagnostic()?
+            .collect();
+
+        let sidechain_number = {
+            let (utxo_id, _, _, _, _, _, _) = utxos[0].as_ref().unwrap();
+            self.sidechain_wallet
+                .query_row(
+                    "SELECT sidechain_number FROM utxos WHERE id = ?1",
+                    [utxo_id],
+                    |row| {
+                        let sidechain_number: u8 = row.get(0)?;
+                        Ok(sidechain_number)
+                    },
+                )
+                .into_diagnostic()?
+        };
+
+        let mut outpoints_values = vec![];
+        for utxo in utxos {
+            let (
+                _id,
+                value,
+                transaction_number,
+                transaction_output_number,
+                block_number,
+                coinbase_output_number,
+                deposit_number,
+            ) = utxo.unwrap();
+            let outpoint = match (
+                transaction_number,
+                transaction_output_number,
+                block_number,
+                coinbase_output_number,
+                deposit_number,
+            ) {
+                (Some(transaction_number), Some(output_number), None, None, None) => {
+                    cusf_sidechain_types::OutPoint::Regular {
+                        transaction_number,
+                        output_number,
+                    }
+                }
+                (None, None, Some(block_number), Some(output_number), None) => {
+                    cusf_sidechain_types::OutPoint::Coinbase {
+                        block_number,
+                        output_number,
+                    }
+                }
+                (None, None, None, None, Some(sequence_number)) => {
+                    cusf_sidechain_types::OutPoint::Deposit { sequence_number }
+                }
+                _ => {
+                    todo!();
+                }
+            };
+            outpoints_values.push((outpoint, value));
+        }
+
+        let mut statement = self
+            .sidechain_wallet
+            .prepare("SELECT id, address, value, main_address, main_fee FROM transaction_outputs")
+            .into_diagnostic()?;
+
+        let raw_outputs: Vec<_> = statement
+            .query_map([], |row| {
+                let id: u64 = row.get(0)?;
+                let address: Vec<u8> = row.get(1)?;
+                let address: [u8; ADDRESS_LENGTH] = address.try_into().unwrap();
+                let value: u64 = row.get(2)?;
+                let main_address: Option<Vec<u8>> = row.get(3)?;
+                let main_address: Option<[u8; MAIN_ADDRESS_LENGTH]> =
+                    main_address.map(|main_address| main_address.try_into().unwrap());
+                let main_fee: Option<u64> = row.get(4)?;
+                Ok((id, address, value, main_address, main_fee))
+            })
+            .into_diagnostic()?
+            .collect();
+
+        let mut outputs = vec![];
+
+        for raw_output in &raw_outputs {
+            let (_id, address, value, main_address, main_fee) = raw_output.as_ref().unwrap();
+            let output = match (main_address, main_fee) {
+                (Some(main_address), Some(main_fee)) => cusf_sidechain_types::Output::Withdrawal {
+                    address: *address,
+                    main_address: *main_address,
+                    value: *value,
+                    fee: *main_fee,
+                },
+                (None, None) => cusf_sidechain_types::Output::Regular {
+                    address: *address,
+                    value: *value,
+                },
+                _ => return Err(miette!("invalid output in database")),
+            };
+            outputs.push(output);
+        }
+
+        Ok((sidechain_number, outpoints_values, outputs))
+    }
+
+    pub fn get_side_utxos(
+        &self,
+        sidechain_number: u8,
+    ) -> Result<BTreeMap<u64, (cusf_sidechain_types::OutPoint, u32, u64)>> {
+        let mut statement = self
+            .sidechain_wallet
+            .prepare(
+                "SELECT id, key_index, value,
+                transaction_number, transaction_output_number,
+                block_number, coinbase_output_number,
+                deposit_number
+                FROM utxos WHERE sidechain_number = ?1",
+            )
+            .into_diagnostic()?;
+        let utxos: Vec<_> = statement
+            .query_map([sidechain_number], |row| {
+                let id: u64 = row.get(0)?;
+                let key_index: u32 = row.get(1)?;
+                let value: u64 = row.get(2)?;
+                let transaction_number: Option<u64> = row.get(3)?;
+                let transaction_output_number: Option<u8> = row.get(4)?;
+                let block_number: Option<u32> = row.get(5)?;
+                let coinbases_output_number: Option<u8> = row.get(6)?;
+                let deposit_number: Option<u64> = row.get(7)?;
+                Ok((
+                    id,
+                    key_index,
+                    value,
+                    transaction_number,
+                    transaction_output_number,
+                    block_number,
+                    coinbases_output_number,
+                    deposit_number,
+                ))
+            })
+            .into_diagnostic()?
+            .collect();
+        let mut id_to_outpoint_key_index_value = BTreeMap::new();
+        for utxo in utxos {
+            let (
+                id,
+                key_index,
+                value,
+                transaction_number,
+                transaction_output_number,
+                block_number,
+                coinbase_output_number,
+                deposit_number,
+            ) = utxo.unwrap();
+            let outpoint = match (
+                transaction_number,
+                transaction_output_number,
+                block_number,
+                coinbase_output_number,
+                deposit_number,
+            ) {
+                (Some(transaction_number), Some(output_number), None, None, None) => {
+                    cusf_sidechain_types::OutPoint::Regular {
+                        transaction_number,
+                        output_number,
+                    }
+                }
+                (None, None, Some(block_number), Some(output_number), None) => {
+                    cusf_sidechain_types::OutPoint::Coinbase {
+                        block_number,
+                        output_number,
+                    }
+                }
+                (None, None, None, None, Some(sequence_number)) => {
+                    cusf_sidechain_types::OutPoint::Deposit { sequence_number }
+                }
+                _ => {
+                    todo!();
+                }
+            };
+            id_to_outpoint_key_index_value.insert(id, (outpoint, key_index, value));
+        }
+        Ok(id_to_outpoint_key_index_value)
     }
 }
 

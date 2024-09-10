@@ -1,7 +1,16 @@
 // FIXME: Refactor wallet.
 
-use bip300301_messages::{sha256d, CoinbaseBuilder, M4AckBundles};
+use bip300301_messages::{
+    bitcoin::{
+        address::{NetworkChecked, NetworkUnchecked, Payload},
+        hashes::Hash,
+        Address, Amount, Network, PubkeyHash,
+    },
+    sha256d, CoinbaseBuilder, M4AckBundles,
+};
+use cusf_sidechain_types::{ADDRESS_LENGTH, MAIN_ADDRESS_LENGTH};
 use miette::{IntoDiagnostic, Result};
+use std::str::FromStr;
 
 use clap::Parser;
 use wallet::Wallet;
@@ -242,6 +251,98 @@ async fn main() -> Result<()> {
         }
         Command::MineSideBlock { sidechain_number } => {
             wallet.mine_side_block(sidechain_number).await?;
+        }
+        Command::GetSideUtxos { sidechain_number } => {
+            let utxos = wallet.get_side_utxos(sidechain_number)?;
+            for (id, (outpoint, _key_index, value)) in &utxos {
+                println!("{id} : {outpoint} : {}", Amount::from_sat(*value));
+            }
+        }
+        Command::Spend { utxo_id } => {
+            wallet.spend(utxo_id)?;
+            println!("utxo {utxo_id} was added to the pending transaction");
+        }
+        Command::GetPendingTransaction => {
+            let transaction = wallet.get_pending_transaction()?;
+            let (sidechain_number, outpoints_values, outputs) = transaction;
+            println!("sidechain number: {sidechain_number}");
+            println!("inputs:");
+            println!();
+            for (outpoint, value) in outpoints_values {
+                println!("{outpoint} : {}", Amount::from_sat(value));
+            }
+            println!();
+            // FIXME: Come up with a better format for displaying outputs.
+            println!("outputs:");
+            println!();
+            for output in outputs {
+                match output {
+                    cusf_sidechain_types::Output::Regular { address, value } => {
+                        let address = bs58::encode(&address).with_check().into_string();
+                        let value = Amount::from_sat(value);
+                        println!("regular : {address} : {value}");
+                    }
+                    cusf_sidechain_types::Output::Withdrawal {
+                        address,
+                        main_address,
+                        value,
+                        fee,
+                    } => {
+                        let address = bs58::encode(&address).with_check().into_string();
+                        let value = Amount::from_sat(value);
+                        let main_address = Address::<NetworkChecked>::new(
+                            Network::Regtest,
+                            Payload::PubkeyHash(PubkeyHash::from_byte_array(main_address)),
+                        );
+                        let fee = Amount::from_sat(fee);
+                        println!("withdrawal: ");
+                        println!("address: {address}");
+                        println!("main_address: {main_address}");
+                        println!("value: {value}");
+                        println!("fee: {fee}");
+                        println!();
+                    }
+                }
+            }
+        }
+        Command::ClearPendingTransaction => {
+            wallet.clear_pending_transaction()?;
+        }
+        Command::AddOutput {
+            value,
+            address,
+            main_address,
+            main_fee,
+        } => {
+            let value = value.to_sat();
+            let address: Option<[u8; ADDRESS_LENGTH]> = match address {
+                Some(address) => {
+                    let address: [u8; ADDRESS_LENGTH] = bs58::decode(address)
+                        .with_check(None)
+                        .into_vec()
+                        .into_diagnostic()?
+                        .try_into()
+                        .unwrap();
+                    Some(address)
+                }
+                None => None,
+            };
+            let main_address = match main_address {
+                Some(main_address) => {
+                    let main_address = Address::from_str(&main_address).into_diagnostic()?;
+                    let main_address = match main_address.payload {
+                        Payload::PubkeyHash(pubkey_hash) => *pubkey_hash.as_byte_array(),
+                        _ => {
+                            println!("main address must be a P2PKH address");
+                            return Ok(());
+                        }
+                    };
+                    Some(main_address)
+                }
+                None => None,
+            };
+            let main_fee = main_fee.map(|main_fee| main_fee.to_sat());
+            wallet.add_output(value, address, main_address, main_fee)?;
         }
     }
 

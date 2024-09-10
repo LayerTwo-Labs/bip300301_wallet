@@ -22,7 +22,7 @@ pub enum Command {
     Mempool,
     /// Get balances available in the wallet.
     GetBalance,
-    /// Get a list of all UTXOs in the wallet.
+    /// Get a list of all UTXOs in the mainchain wallet.
     GetUtxos,
     /// Crete a new sidechain proposal for miners to vote on.
     ProposeSidechain { sidechain_number: u8, data: String },
@@ -65,4 +65,18 @@ pub enum Command {
     GetNewSidechainAddress { sidechain_number: u8 },
     /// Mine a block for a sidechain.
     MineSideBlock { sidechain_number: u8 },
+    /// Get a list of all UTXOs in the sidechain wallet.
+    GetSideUtxos { sidechain_number: u8 },
+    /// Spend a sidechain utxo.
+    Spend { utxo_id: u64 },
+    /// Clear inputs and outputs for pending sidechain transaction.
+    ClearPendingTransaction,
+    /// Get pending sidechain transaction.
+    GetPendingTransaction,
+    AddOutput {
+        value: Amount,
+        address: Option<String>,
+        main_address: Option<String>,
+        main_fee: Option<Amount>,
+    },
 }
