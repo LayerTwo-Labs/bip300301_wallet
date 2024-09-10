@@ -15,7 +15,7 @@ use bip300301_enforcer_proto::validator::{
 use bip300301_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
 use bip300301_messages::bitcoin::opcodes::OP_TRUE;
 use bip300301_messages::bitcoin::Witness;
-use bip300301_messages::{CoinbaseBuilder, OP_DRIVECHAIN};
+use bip300301_messages::OP_DRIVECHAIN;
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
 use cusf_sidechain_proto::sidechain::{
