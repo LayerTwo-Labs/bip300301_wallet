@@ -1,4 +1,5 @@
 // FIXME: Refactor wallet.
+// FIXME: Implement authorizations.
 
 use bip300301_messages::{
     bitcoin::{
@@ -268,14 +269,18 @@ async fn main() -> Result<()> {
             println!("sidechain number: {sidechain_number}");
             println!("inputs:");
             println!();
+            let mut value_in = 0;
             for (outpoint, value) in outpoints_values {
                 println!("{outpoint} : {}", Amount::from_sat(value));
+                value_in += value;
             }
             println!();
             // FIXME: Come up with a better format for displaying outputs.
             println!("outputs:");
             println!();
+            let mut value_out = 0;
             for output in outputs {
+                value_out += output.total_value();
                 match output {
                     cusf_sidechain_types::Output::Regular { address, value } => {
                         let address = bs58::encode(&address).with_check().into_string();
@@ -304,6 +309,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            println!();
+            println!("total value in: {}", Amount::from_sat(value_in));
+            println!("total value out: {}", Amount::from_sat(value_out));
+            println!("fee: {}", Amount::from_sat(value_in - value_out));
         }
         Command::ClearPendingTransaction => {
             wallet.clear_pending_transaction()?;
