@@ -98,11 +98,12 @@ pub enum Command {
     GetPendingTransaction,
     AddOutput {
         value: Amount,
-        address: Option<String>,
-        main_address: Option<String>,
         main_fee: Option<Amount>,
     },
     SyncSideUtxos {
+        sidechain_number: u8,
+    },
+    GetWithdrawalBundle {
         sidechain_number: u8,
     },
 }

@@ -255,8 +255,18 @@ async fn main() -> Result<()> {
         }
         Command::GetSideUtxos { sidechain_number } => {
             let utxos = wallet.get_side_utxos(sidechain_number)?;
-            for (id, (outpoint, _key_index, value)) in &utxos {
-                println!("{id} : {outpoint} : {}", Amount::from_sat(*value));
+            for (id, (outpoint, _key_index, value, main_fee)) in &utxos {
+                let output_type = match main_fee {
+                    Some(_) => "withdrawal",
+                    None => "regular",
+                };
+                let value = Amount::from_sat(*value);
+                println!(
+                    "{id} : {outpoint} : {output_type} : {value}{}",
+                    main_fee
+                        .map(|fee| format!(" : {}", Amount::from_sat(fee)))
+                        .unwrap_or("".to_string())
+                );
             }
         }
         Command::Spend { utxo_id } => {
@@ -286,6 +296,7 @@ async fn main() -> Result<()> {
                         let address = bs58::encode(&address).with_check().into_string();
                         let value = Amount::from_sat(value);
                         println!("regular : {address} : {value}");
+                        println!();
                     }
                     cusf_sidechain_types::Output::Withdrawal {
                         address,
@@ -320,13 +331,9 @@ async fn main() -> Result<()> {
         Command::SubmitPendingTransaction => {
             wallet.submit_pending_transaction().await?;
         }
-        Command::AddOutput {
-            value,
-            address,
-            main_address,
-            main_fee,
-        } => {
+        Command::AddOutput { value, main_fee } => {
             let value = value.to_sat();
+            /*
             let address: Option<[u8; ADDRESS_LENGTH]> = match address {
                 Some(address) => {
                     let address: [u8; ADDRESS_LENGTH] = bs58::decode(address)
@@ -353,11 +360,17 @@ async fn main() -> Result<()> {
                 }
                 None => None,
             };
+            */
             let main_fee = main_fee.map(|main_fee| main_fee.to_sat());
-            wallet.add_output(value, address, main_address, main_fee)?;
+            wallet.add_output(value, main_fee)?;
         }
         Command::SyncSideUtxos { sidechain_number } => {
             wallet.sync_side_utxos(sidechain_number).await?;
+        }
+        Command::GetWithdrawalBundle { sidechain_number } => {
+            let bundle = wallet.get_withdrawal_bundle(sidechain_number).await?;
+            dbg!(&bundle);
+            println!("{}", bundle.txid());
         }
     }
 

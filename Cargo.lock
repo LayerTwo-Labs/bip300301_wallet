@@ -679,7 +679,7 @@ dependencies = [
 [[package]]
 name = "cusf_sidechain_proto"
 version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/cusf_sidechain_proto#b0fd093d4359d445303880183e04896d6adb8584"
+source = "git+https://github.com/LayerTwo-Labs/cusf_sidechain_proto#1d07a04b1de9d6cf224f679845a2c48272e24c96"
 dependencies = [
  "prost",
  "tonic",
