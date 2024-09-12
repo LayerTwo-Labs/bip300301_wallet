@@ -1254,14 +1254,14 @@ impl Wallet {
                         output_number,
                     } => {
                         tx.execute(
-                            "INSERT INTO utxos
+                            "INSERT OR IGNORE INTO utxos
                             (sidechain_number,
                              key_index,
                              value,
                              main_fee,
                              transaction_number,
                              transaction_output_number)
-                            VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            VALUES (?1, ?2, ?3, ?4, ?5, ?6);",
                             (
                                 sidechain_number,
                                 key_index,
@@ -1275,7 +1275,7 @@ impl Wallet {
                     }
                     cusf_sidechain_types::OutPoint::Deposit { sequence_number } => {
                         tx.execute(
-                            "INSERT INTO utxos
+                            "INSERT OR IGNORE INTO utxos
                             (sidechain_number,
                              key_index,
                              value,
@@ -1297,7 +1297,7 @@ impl Wallet {
                         output_number,
                     } => {
                         tx.execute(
-                            "INSERT INTO utxos
+                            "INSERT OR IGNORE INTO utxos
                             (sidechain_number,
                              key_index,
                              value,
