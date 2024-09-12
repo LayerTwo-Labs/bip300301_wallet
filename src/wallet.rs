@@ -26,7 +26,7 @@ use cusf_sidechain_types::{Hashable, ADDRESS_LENGTH, HASH_LENGTH, MAIN_ADDRESS_L
 use ed25519_dalek_bip32::{ChildIndex, DerivationPath, ExtendedSigningKey};
 use miette::{miette, IntoDiagnostic, Result};
 use rusqlite::{Connection, Row};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
@@ -401,10 +401,10 @@ impl Wallet {
             .into_diagnostic()?
             .ok_or(miette!("failed to get block count"))?;
         let bmm_hashes: Vec<Vec<u8>> = self
-            .get_bmm_hashes()
+            .get_bmm_requests()
             .await?
             .into_iter()
-            .map(|bmm_hash| bmm_hash.to_vec())
+            .map(|(_sidechain_number, bmm_hash)| bmm_hash.to_vec())
             .collect();
         for (_sidechain_number, sidechain_client) in &mut self.sidechain_clients {
             let request = ConnectMainBlockRequest {
@@ -870,16 +870,16 @@ impl Wallet {
         Ok(deposits)
     }
 
-    pub async fn get_bmm_hashes(&mut self) -> Result<Vec<[u8; HASH_LENGTH]>> {
-        let mut bmm_hashes = vec![];
+    pub async fn get_bmm_requests(&mut self) -> Result<Vec<(u8, [u8; HASH_LENGTH])>> {
+        let mut bmm_requests = vec![];
         let active_sidechains = self.get_sidechains().await?;
         for sidechain in &active_sidechains {
             let (header, _coinbase, _transactions) =
                 self.get_next_block(sidechain.sidechain_number).await?;
             let bmm_hash = header.hash();
-            bmm_hashes.push(bmm_hash);
+            bmm_requests.push((sidechain.sidechain_number, bmm_hash));
         }
-        Ok(bmm_hashes)
+        Ok(bmm_requests)
     }
 
     pub async fn get_next_block(

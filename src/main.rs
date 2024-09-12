@@ -71,9 +71,9 @@ async fn main() -> Result<()> {
                         wallet.delete_sidechain_ack(&sidechain_ack)?;
                     }
                 }
-                let bmm_hashes = wallet.get_bmm_hashes().await?;
-                for bmm_hash in &bmm_hashes {
-                    coinbase_builder = coinbase_builder.bmm_accept(bmm_hash);
+                let bmm_hashes = wallet.get_bmm_requests().await?;
+                for (sidechain_number, bmm_hash) in &bmm_hashes {
+                    coinbase_builder = coinbase_builder.bmm_accept(*sidechain_number, bmm_hash);
                 }
                 let coinbase_outputs = coinbase_builder.build();
 

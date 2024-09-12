@@ -106,9 +106,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.87"
+version = "1.0.88"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10f00e1f6e58a40e807377c75c6a7f97bf9044fab57816f2414e6f5f4499d7b8"
+checksum = "4e1496f8fb1fbf272686b8d37f523dab3e4a7443300055e74cdaa449f3114356"
 
 [[package]]
 name = "arrayref"
@@ -333,7 +333,7 @@ dependencies = [
 [[package]]
 name = "bip300301_messages"
 version = "0.1.0"
-source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#55b4e68b663fa55228fae385454da9af844fac44"
+source = "git+https://github.com/LayerTwo-Labs/bip300301_messages#398b224981c7c236c8354704e655996d33685149"
 dependencies = [
  "bitcoin 0.30.2",
  "byteorder",
@@ -1355,9 +1355,9 @@ checksum = "3fdb12b2476b595f9358c5161aa467c2438859caa136dec86c26fdd2efe17b92"
 
 [[package]]
 name = "owo-colors"
-version = "4.0.0"
+version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "caff54706df99d2a78a5a4e3455ff45448d81ef1bb63c22cd14052ca0e993a3f"
+checksum = "fb37767f6569cd834a413442455e0f066d0d522de8630436e2a1761d9726ba56"
 
 [[package]]
 name = "parking_lot"
@@ -1662,9 +1662,9 @@ dependencies = [
 
 [[package]]
 name = "rustix"
-version = "0.38.36"
+version = "0.38.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f55e80d50763938498dd5ebb18647174e0c76dc38c5505294bb224624f30f36"
+checksum = "8acb788b847c24f28525660c4d7758620a7210875711f79e7f663cc152726811"
 dependencies = [
  "bitflags 2.6.0",
  "errno",
@@ -1774,7 +1774,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9465315bc9d4566e1724f0fffcbcc446268cb522e60f9a27bcded6b19c108113"
 dependencies = [
  "bitcoin_hashes 0.14.0",
- "secp256k1-sys 0.10.0",
+ "secp256k1-sys 0.10.1",
  "serde",
 ]
 
@@ -1789,9 +1789,9 @@ dependencies = [
 
 [[package]]
 name = "secp256k1-sys"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1433bd67156263443f14d603720b082dd3121779323fce20cba2aa07b874bc1b"
+checksum = "d4387882333d3aa8cb20530a17c69a3752e97837832f34f6dccc760e715001d9"
 dependencies = [
  "cc",
 ]
@@ -2247,9 +2247,9 @@ checksum = "08f95100a766bf4f8f28f90d77e0a5461bbdb219042e7679bebe79004fed8d75"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.12"
+version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3354b9ac3fae1ff6755cb6db53683adb661634f67557942dea4facebec0fee4b"
+checksum = "e91b56cd4cadaeb79bbf1a5645f6b4f8dc5bde8834ad5894a8db35fda9efa1fe"
 
 [[package]]
 name = "unicode-linebreak"
