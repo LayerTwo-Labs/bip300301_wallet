@@ -1,6 +1,7 @@
 // FIXME: Refactor wallet.
 // FIXME: Implement authorizations.
 
+use crate::cli::Command;
 use bip300301_messages::{
     bitcoin::{
         address::{NetworkChecked, Payload},
@@ -9,14 +10,9 @@ use bip300301_messages::{
     },
     sha256d, CoinbaseBuilder, M4AckBundles,
 };
-use cusf_sidechain_types::ADDRESS_LENGTH;
-use miette::{IntoDiagnostic, Result};
-use std::str::FromStr;
-
 use clap::Parser;
+use miette::{IntoDiagnostic, Result};
 use wallet::Wallet;
-
-use crate::cli::Command;
 
 mod cli;
 mod wallet;
@@ -373,6 +369,5 @@ async fn main() -> Result<()> {
             println!("{}", bundle.txid());
         }
     }
-
     Ok(())
 }
