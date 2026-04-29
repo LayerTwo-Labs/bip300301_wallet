@@ -8,13 +8,17 @@ use bdk::{
     keys::{DerivableKey, ExtendedKey},
 };
 use bdk::{KeychainKind, SignOptions, SyncOptions};
+use bip300301_enforcer_proto::enforcer_common::ReverseHex;
+use bip300301_enforcer_proto::validator::get_sidechain_proposals_response::SidechainProposal;
 use bip300301_enforcer_proto::validator::validator_client::ValidatorClient;
 use bip300301_enforcer_proto::validator::{
-    GetCtipRequest, GetDepositsRequest, GetSidechainProposalsRequest, GetSidechainsRequest,
+    GetChainTipRequest as EnforcerGetChainTipRequest, GetCtipRequest,
+    GetSidechainProposalsRequest, GetSidechainsRequest, GetTwoWayPegDataRequest,
 };
 use bip300301_messages::bitcoin::opcodes::all::{OP_PUSHBYTES_1, OP_PUSHBYTES_36};
 use bip300301_messages::bitcoin::opcodes::OP_TRUE;
-use bip300301_messages::bitcoin::{witness, Witness};
+use bip300301_messages::bitcoin::Witness;
+use prost::Message;
 use bip300301_messages::OP_DRIVECHAIN;
 use bip39::{Language, Mnemonic};
 use cusf_sidechain_proto::sidechain::sidechain_client::SidechainClient;
@@ -30,6 +34,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::Path;
 use tonic::transport::Channel;
+
+fn txid_from_reverse_hex(rh: &ReverseHex) -> Result<Txid> {
+    let hex = rh
+        .hex
+        .as_ref()
+        .ok_or_else(|| miette!("ctip txid missing hex field"))?
+        .as_str();
+    let mut bytes = hex::decode(hex).into_diagnostic()?;
+    bytes.reverse();
+    Txid::from_slice(&bytes).into_diagnostic()
+}
 
 pub struct Wallet {
     main_client: Client,
@@ -517,7 +532,7 @@ impl Wallet {
 
     pub async fn get_pending_sidechain_proposals(
         &mut self,
-    ) -> Result<HashMap<u8, bip300301_enforcer_proto::validator::SidechainProposal>> {
+    ) -> Result<HashMap<u8, SidechainProposal>> {
         let pending_proposals = self
             .enforcer_client
             .get_sidechain_proposals(GetSidechainProposalsRequest {})
@@ -527,10 +542,11 @@ impl Wallet {
             .sidechain_proposals
             .into_iter()
             .map(|sidechain_proposal| {
-                (
-                    sidechain_proposal.sidechain_number as u8,
-                    sidechain_proposal,
-                )
+                let n = sidechain_proposal
+                    .sidechain_number
+                    .map(|u| u as u8)
+                    .unwrap_or(0);
+                (n, sidechain_proposal)
             })
             .collect();
         Ok(pending_proposals)
@@ -568,9 +584,23 @@ impl Wallet {
             .into_inner()
             .sidechains
             .into_iter()
-            .map(|sidechain| Sidechain {
-                sidechain_number: sidechain.sidechain_number as u8,
-                data: sidechain.data,
+            .map(|sidechain| {
+                let data = sidechain
+                    .declaration
+                    .as_ref()
+                    .map(|d| {
+                        let mut buf = Vec::new();
+                        let _ = d.encode(&mut buf);
+                        buf
+                    })
+                    .unwrap_or_default();
+                Sidechain {
+                    sidechain_number: sidechain
+                        .sidechain_number
+                        .map(|u| u as u8)
+                        .unwrap_or(0),
+                    data,
+                }
             })
             .collect();
         Ok(sidechains)
@@ -578,7 +608,7 @@ impl Wallet {
 
     pub async fn get_ctip(&mut self, sidechain_number: u8) -> Result<Option<(OutPoint, u64, u64)>> {
         let request = GetCtipRequest {
-            sidechain_number: sidechain_number as u32,
+            sidechain_number: Some(sidechain_number as u32),
         };
         let ctip = self
             .enforcer_client
@@ -588,7 +618,12 @@ impl Wallet {
             .into_inner()
             .ctip;
         if let Some(ctip) = ctip {
-            let txid = bitcoin::Txid::from_slice(&ctip.txid).into_diagnostic()?;
+            let txid = txid_from_reverse_hex(
+                ctip
+                    .txid
+                    .as_ref()
+                    .ok_or_else(|| miette!("ctip response missing txid"))?,
+            )?;
             let vout = ctip.vout;
             let outpoint = OutPoint { txid, vout };
             let value = ctip.value;
@@ -702,7 +737,7 @@ impl Wallet {
         let ctip = self
             .enforcer_client
             .get_ctip(GetCtipRequest {
-                sidechain_number: sidechain_number as u32,
+                sidechain_number: Some(sidechain_number as u32),
             })
             .await
             .into_diagnostic()?
@@ -809,16 +844,28 @@ impl Wallet {
     }
 
     pub async fn get_deposits(&mut self, sidechain_number: u8) -> Result<()> {
-        let deposits = self
+        let tip = self
             .enforcer_client
-            .get_deposits(GetDepositsRequest {
-                sidechain_number: sidechain_number as u32,
+            .get_chain_tip(EnforcerGetChainTipRequest {})
+            .await
+            .into_diagnostic()?
+            .into_inner();
+        let end_hash = tip
+            .block_header_info
+            .as_ref()
+            .and_then(|h| h.block_hash.clone())
+            .ok_or_else(|| miette!("chain tip missing block hash"))?;
+        let peg = self
+            .enforcer_client
+            .get_two_way_peg_data(GetTwoWayPegDataRequest {
+                sidechain_id: Some(sidechain_number as u32),
+                start_block_hash: None,
+                end_block_hash: Some(end_hash),
             })
             .await
             .into_diagnostic()?
-            .into_inner()
-            .deposits;
-        dbg!(deposits);
+            .into_inner();
+        dbg!(peg.blocks);
         Ok(())
     }
 

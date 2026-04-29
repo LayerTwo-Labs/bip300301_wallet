@@ -2,6 +2,7 @@
 // FIXME: Implement authorizations.
 
 use crate::cli::Command;
+use bip300301_enforcer_proto::enforcer_common::ReverseHex;
 use bip300301_messages::{
     bitcoin::{
         address::{NetworkChecked, Payload},
@@ -12,10 +13,21 @@ use bip300301_messages::{
 };
 use clap::Parser;
 use miette::{IntoDiagnostic, Result};
+use prost::Message;
 use wallet::Wallet;
 
 mod cli;
 mod wallet;
+
+fn reverse_hex_to_bytes(rh: &ReverseHex) -> miette::Result<Vec<u8>> {
+    let s = rh
+        .hex
+        .as_ref()
+        .ok_or_else(|| miette::miette!("reverse hex missing"))?;
+    let mut bytes = hex::decode(s).map_err(|e| miette::miette!("{e}"))?;
+    bytes.reverse();
+    Ok(bytes)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -55,7 +67,14 @@ async fn main() -> Result<()> {
                     if let Some(sidechain_proposal) =
                         pending_sidechain_proposals.get(&sidechain_ack.sidechain_number)
                     {
-                        if sidechain_proposal.data_hash == sidechain_ack.data_hash {
+                        let matches = sidechain_proposal
+                            .description_sha256d_hash
+                            .as_ref()
+                            .map(|h| reverse_hex_to_bytes(h))
+                            .transpose()?
+                            .map(|b| b.as_slice() == sidechain_ack.data_hash.as_slice())
+                            .unwrap_or(false);
+                        if matches {
                             coinbase_builder = coinbase_builder.ack_sidechain(
                                 sidechain_ack.sidechain_number,
                                 &sidechain_ack.data_hash,
@@ -117,16 +136,32 @@ async fn main() -> Result<()> {
 
             println!("Proposals being voted on:");
             for (_, proposal) in &pending_sidechain_proposals {
-                let data = String::from_utf8(proposal.data.clone()).into_diagnostic()?;
-                let data_hash = hex::encode(&proposal.data_hash);
+                let data = proposal
+                    .declaration
+                    .as_ref()
+                    .map(|d| {
+                        let mut buf = Vec::new();
+                        let _ = d.encode(&mut buf);
+                        hex::encode(&buf)
+                    })
+                    .unwrap_or_default();
+                let data_hash = proposal
+                    .description_sha256d_hash
+                    .as_ref()
+                    .and_then(|h| h.hex.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
                 let block_height = wallet.get_block_height()?;
+                let sn = proposal.sidechain_number.unwrap_or(0);
+                let votes = proposal.vote_count.unwrap_or(0);
+                let ph = proposal.proposal_height.unwrap_or(0);
                 println!(
                     "sidechain number: {} data hash: {} data: {} votes: {} age: {}",
-                    proposal.sidechain_number,
+                    sn,
                     data_hash,
                     data,
-                    proposal.vote_count,
-                    block_height - proposal.proposal_height
+                    votes,
+                    block_height.saturating_sub(ph)
                 );
             }
         }

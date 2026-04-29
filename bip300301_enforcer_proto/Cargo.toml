@@ -1,0 +1,13 @@
+[package]
+name = "bip300301_enforcer_proto"
+version = "0.1.0"
+edition = "2021"
+description = "Tonic client types for CUSF mainchain validator (replaces private git crate)."
+publish = false
+
+[dependencies]
+prost = "0.12.4"
+tonic = "0.11.0"
+
+[build-dependencies]
+tonic-build = "0.11.0"

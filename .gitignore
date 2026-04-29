@@ -1,2 +1,4 @@
 /target
 db
+/bip300301_enforcer_proto/target
+/bip300301_enforcer_proto/Cargo.lock

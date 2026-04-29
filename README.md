@@ -15,3 +15,10 @@ intended for testing. Currently the 12 words are hard coded as
 betray annual dog current tomorrow media ghost dynamic mule length sure salad
 ```
 for ease of testing.
+
+## Building from a fresh clone
+
+The `bip300301_enforcer_proto` directory is an in-tree Tonic shim. It needs the proto files from
+[cusf_sidechain_proto](https://github.com/LayerTwo-Labs/cusf_sidechain_proto) at `cusf_sidechain_proto/proto/`
+(e.g. `git submodule add` that repo as `cusf_sidechain_proto`, or clone it beside this repo and use the
+`../cusf_sidechain_proto/proto` fallback path).
